@@ -112,3 +112,9 @@ _to_delete/
 # ========================================
 backend/migrations/
 backend/tests/
+
+
+# ========================================
+# Optimized prompts (optional)
+# ========================================
+backend/app/prompts_optimized.py
