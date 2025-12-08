@@ -1,0 +1,12 @@
+node_modules
+dist
+.vite
+.vite-temp
+*.log
+.env.local
+.env.development
+tests/
+*.test.ts
+*.spec.ts
+coverage/
+.eslintcache

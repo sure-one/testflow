@@ -84,15 +84,6 @@ chmod +x run.sh stop.sh
 ./run.sh
 ```
 
-脚本会自动执行以下操作：
-1.  检测系统环境（Python, Node.js）
-2.  创建虚拟环境并安装后端依赖
-3.  安装前端依赖
-4.  启动前后端服务
-
-### 🛑 停止服务
-- **Windows**: 直接关闭弹出的命令行窗口。
-- **Linux / macOS**: 运行 `./stop.sh`。
 
 ### 📦 手动安装 (可选)
 
@@ -129,6 +120,25 @@ npm run dev
 ```
 
 访问 http://localhost:3000 即可开始使用 TestFlow。
+
+### 🐳 Docker 部署 (推荐生产环境)
+
+使用 Docker 可以快速部署，无需配置 Python 和 Node.js 环境。
+
+```bash
+# 1. 配置环境变量
+cp backend/.env.example backend/.env
+# 编辑 backend/.env，填入你的 AI API Key
+
+# 2. 启动服务
+docker-compose up -d --build
+
+# 3. 访问应用
+# 前端: http://localhost:3000
+# 后端: http://localhost:9000/docs
+```
+
+详细的 Docker 部署说明请查看 [DOCKER.md](DOCKER.md)
 
 ## 📄 许可证
 

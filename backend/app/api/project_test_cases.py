@@ -537,27 +537,15 @@ def export_to_excel(project, modules, test_cases, tp_rp_map, rp_module_map, modu
     # 状态映射
     status_map = {"draft": "草稿", "under_review": "评审中", "approved": "已通过"}
     
-    # 测试分类映射
-    category_map = {
-        "functional": "功能测试",
-        "performance": "性能测试",
-        "security": "安全测试",
-        "usability": "可用性测试",
-        "compatibility": "兼容性测试",
-        "reliability": "可靠性测试"
-    }
+    # 从数据库获取测试分类映射
+    from app.models.settings import TestCategory
+    categories = db.query(TestCategory).filter(TestCategory.is_active == True).all()
+    category_map = {c.code: c.name for c in categories}
     
-    # 设计方法映射
-    method_map = {
-        "equivalence_partitioning": "等价类划分",
-        "boundary_value": "边界值分析",
-        "cause_effect": "因果图法",
-        "decision_table": "判定表法",
-        "state_transition": "状态转换法",
-        "orthogonal_array": "正交试验法",
-        "scenario": "场景法",
-        "error_guessing": "错误推测法"
-    }
+    # 从数据库获取设计方法映射
+    from app.models.settings import TestDesignMethod
+    methods = db.query(TestDesignMethod).filter(TestDesignMethod.is_active == True).all()
+    method_map = {m.code: m.name for m in methods}
     
     # 写入数据
     for idx, tc in enumerate(test_cases, 1):
