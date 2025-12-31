@@ -84,7 +84,7 @@ def create_project_admin(
     return db_project
 
 
-@router.post("/", response_model=ProjectSchema, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProjectSchema, status_code=status.HTTP_201_CREATED)
 def create_project(
     project_data: ProjectCreate,
     current_user: User = Depends(get_current_active_user),
@@ -144,7 +144,7 @@ def list_all_projects_admin(
     )
 
 
-@router.get("/", response_model=ProjectListResponse)
+@router.get("", response_model=ProjectListResponse)
 def list_projects(
     skip: int = 0,
     limit: int = 20,
