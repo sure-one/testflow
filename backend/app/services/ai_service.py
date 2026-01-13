@@ -5,6 +5,7 @@ AI服务 - 调用大语言模型
 """
 import json
 import os
+import re
 import base64
 from typing import Dict, Any, List, Optional
 import httpx
@@ -57,8 +58,8 @@ class AIService:
             AI响应内容（完整收集后返回）
         """
         # 确保 base_url 格式正确
-        base_url = base_url.rstrip('/')
-        if not base_url.endswith('/v1'):
+        base_url = base_url.strip().rstrip('/')
+        if not re.search(r'/v\d+$', base_url):
             base_url = f"{base_url}/v1"
         
         url = f"{base_url}/chat/completions"
