@@ -57,12 +57,12 @@ export const requirementApi = {
 
   // 获取项目需求文件列表
   getFileList: (projectId: number): Promise<RequirementFile[]> => {
-    return api.get(`/requirements/${projectId}/files`)
+    return api.get(`/projects/${projectId}/requirements/files`)
   },
 
   // 下载需求文件
   downloadFile: (projectId: number, fileId: number): Promise<Blob> => {
-    return api.get(`/requirements/${projectId}/files/${fileId}/download`, {
+    return api.get(`/projects/${projectId}/requirements/files/${fileId}/download`, {
       responseType: 'blob'
     })
   },
@@ -71,7 +71,7 @@ export const requirementApi = {
   renameFile: (projectId: number, fileId: number, newFilename: string): Promise<RequirementFile> => {
     const formData = new FormData()
     formData.append('new_filename', newFilename)
-    return api.put(`/requirements/${projectId}/files/${fileId}/rename`, formData, {
+    return api.put(`/projects/${projectId}/requirements/files/${fileId}/rename`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
@@ -80,12 +80,12 @@ export const requirementApi = {
 
   // 获取文件内容
   getFileContent: (projectId: number, fileId: number): Promise<RequirementFileContent> => {
-    return api.get(`/requirements/${projectId}/files/${fileId}/content`)
+    return api.get(`/projects/${projectId}/requirements/files/${fileId}/content`)
   },
 
   // 删除需求文件
   deleteFile: (projectId: number, fileId: number): Promise<{ message: string }> => {
-    return api.delete(`/requirements/${projectId}/files/${fileId}`)
+    return api.delete(`/projects/${projectId}/requirements/files/${fileId}`)
   },
 
   // ========== 按模块管理需求点 ==========

@@ -105,7 +105,7 @@ export const authApi = {
 
   // 创建用户（管理员专用）
   createUser: (data: RegisterRequest): Promise<User> => {
-    return api.post('/auth/admin/users', data)
+    return api.post('/auth/users', data)
   },
 
   // 获取用户详情（管理员专用）
@@ -115,12 +115,12 @@ export const authApi = {
 
   // 更新用户信息（管理员专用）
   updateUser: (userId: number, data: UserUpdateRequest): Promise<User> => {
-    return api.put(`/auth/admin/users/${userId}`, data)
+    return api.put(`/auth/users/${userId}`, data)
   },
 
   // 删除用户（管理员专用）
   deleteUser: (userId: number): Promise<{ message: string }> => {
-    return api.delete(`/auth/admin/users/${userId}`)
+    return api.delete(`/auth/users/${userId}`)
   },
 
   // 更新用户状态（管理员专用）

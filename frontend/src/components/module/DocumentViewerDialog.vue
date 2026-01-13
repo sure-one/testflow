@@ -79,11 +79,19 @@
             @click="openImagePreview(index)"
           >
             <div class="image-thumbnail">
+              <div v-if="imageLoadingMap[image.id]" class="absolute inset-0 flex items-center justify-center bg-gray-100 z-10">
+                 <el-icon class="is-loading text-blue-500"><Loading /></el-icon>
+              </div>
               <img
-                :src="getImageUrl(image)"
+                v-if="getDisplayUrl(image)"
+                :src="getDisplayUrl(image)"
                 :alt="image.alt_text || `图片 ${index + 1}`"
                 @error="handleImageError($event, index)"
               />
+              <div v-else class="w-full h-full flex items-center justify-center text-gray-300">
+                <el-icon :size="24"><Picture /></el-icon>
+              </div>
+              
               <div class="image-overlay">
                 <el-icon :size="24"><ZoomIn /></el-icon>
               </div>
@@ -129,9 +137,13 @@
       </button>
       
       <div class="preview-image-wrapper">
+        <div v-if="!getDisplayUrl(currentPreviewImage)" class="flex flex-col items-center justify-center text-gray-400">
+             <el-icon class="is-loading text-4xl mb-2"><Loading /></el-icon>
+             <span class="text-xs">加载原图中...</span>
+        </div>
         <img
-          v-if="currentPreviewImage"
-          :src="getImageUrl(currentPreviewImage)"
+          v-else
+          :src="getDisplayUrl(currentPreviewImage)"
           :alt="currentPreviewImage.alt_text || `图片 ${currentPreviewIndex + 1}`"
           class="preview-image"
         />
@@ -156,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { Document, Loading, CircleClose, ZoomIn, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 import api from '@/api'
 
@@ -219,6 +231,9 @@ const content = ref<string>('')
 const error = ref<string | null>(null)
 const images = ref<RequirementImage[]>([])
 const imageCount = ref(0)
+// 存储图片ID到Blob URL的映射
+const imageSrcMap = ref<Record<number, string>>({})
+const imageLoadingMap = ref<Record<number, boolean>>({})
 
 // 图片预览状态
 const previewVisible = ref(false)
@@ -227,16 +242,46 @@ const currentPreviewIndex = ref(0)
 const contentLength = computed(() => content.value?.length || 0)
 const currentPreviewImage = computed(() => images.value[currentPreviewIndex.value] || null)
 
-// 获取图片URL
-const getImageUrl = (image: RequirementImage) => {
-  // 使用后端API获取图片
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-  return `${baseUrl}/projects/${props.projectId}/requirements/files/${image.requirement_file_id}/images/${image.id}`
+// 获取单个图片的Blob URL
+const loadSingleImage = async (image: RequirementImage) => {
+  if (imageSrcMap.value[image.id]) return
+
+  imageLoadingMap.value[image.id] = true
+  try {
+    const response = await api.get(
+      `/projects/${props.projectId}/requirements/files/${image.requirement_file_id}/images/${image.id}`,
+      { responseType: 'blob' }
+    )
+    
+    // 创建Blob URL
+    const blob = new Blob([response as unknown as BlobPart])
+    const url = URL.createObjectURL(blob)
+    imageSrcMap.value[image.id] = url
+  } catch (err) {
+    console.error(`加载图片 ${image.id} 失败:`, err)
+  } finally {
+    imageLoadingMap.value[image.id] = false
+  }
 }
 
-// 处理图片加载错误
+// 获取显示用的图片URL
+const getDisplayUrl = (image: RequirementImage) => {
+  return imageSrcMap.value[image.id] || '' 
+}
+
+// 清理Blob URLs
+const cleanupBlobUrls = () => {
+  Object.values(imageSrcMap.value).forEach(url => {
+    URL.revokeObjectURL(url)
+  })
+  imageSrcMap.value = {}
+  imageLoadingMap.value = {}
+}
+
+// 处理图片加载错误（fallback）
 const handleImageError = (event: Event, index: number) => {
   const target = event.target as HTMLImageElement
+  // 使用SVG Placeholder作为后备
   target.src = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMTAwIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCI+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIGZpbGw9IiNlZWUiLz48dGV4dCB4PSI1MCIgeT0iNTAiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIiBmaWxsPSIjOTk5Ij7lm77niYfliqDovb3lpLHotKU8L3RleHQ+PC9zdmc+'
 }
 
@@ -269,6 +314,7 @@ const loadContent = async () => {
   content.value = ''
   images.value = []
   imageCount.value = 0
+  cleanupBlobUrls() // 清理旧图片
 
   try {
     const response = await api.get<FileContentResponse>(
@@ -289,6 +335,10 @@ const loadContent = async () => {
     if (data.images && data.images.length > 0) {
       images.value = data.images
       imageCount.value = data.images.length
+      
+      // 并发加载所有图片
+      data.images.forEach(img => loadSingleImage(img))
+      
     } else if (data.has_images && data.image_count) {
       imageCount.value = data.image_count
     }
@@ -307,6 +357,7 @@ const handleClose = () => {
   // 重置状态
   previewVisible.value = false
   currentPreviewIndex.value = 0
+  cleanupBlobUrls() // 关闭时清理资源
 }
 
 // 格式化文件大小
@@ -328,6 +379,11 @@ watch(() => props.visible, (newVal) => {
   if (newVal && props.document) {
     loadContent()
   }
+})
+
+// 组件卸载时清理
+onUnmounted(() => {
+  cleanupBlobUrls()
 })
 </script>
 
