@@ -445,3 +445,41 @@ def get_user(
         )
 
     return user
+
+
+@router.put("/users/{user_id}/password")
+def reset_user_password(
+    user_id: int,
+    password_data: dict,
+    admin_user: User = Depends(get_current_admin_user),
+    db: Session = Depends(get_db)
+) -> Any:
+    """重置用户密码（管理员专用）"""
+    # 查找目标用户
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在"
+        )
+
+    # 获取新密码
+    new_password = password_data.get("new_password")
+    if not new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="缺少new_password参数"
+        )
+
+    # 验证密码长度
+    if len(new_password) < 6 or len(new_password) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="密码长度必须在6到100个字符之间"
+        )
+
+    # 更新密码（使用bcrypt加密）
+    user.password_hash = get_password_hash(new_password)
+    db.commit()
+
+    return {"message": f"用户 {user.username} 的密码已重置"}

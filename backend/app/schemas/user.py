@@ -110,3 +110,8 @@ class UserListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+
+# 管理员重置密码模式
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(..., min_length=6, max_length=100, description="新密码")

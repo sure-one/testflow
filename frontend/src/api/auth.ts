@@ -131,5 +131,10 @@ export const authApi = {
   // 更新用户角色（管理员专用）
   updateUserRole: (userId: number, role: 'admin' | 'user'): Promise<{ message: string }> => {
     return api.put(`/auth/users/${userId}/role`, { role })
+  },
+
+  // 重置用户密码（管理员专用）
+  resetUserPassword: (userId: number, newPassword: string): Promise<{ message: string }> => {
+    return api.put(`/auth/users/${userId}/password`, { new_password: newPassword })
   }
 }

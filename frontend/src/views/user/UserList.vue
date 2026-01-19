@@ -95,13 +95,19 @@
               <span class="text-gray-500 text-sm font-mono">{{ formatDate(row.created_at) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="220" fixed="right">
+          <el-table-column label="操作" width="280" fixed="right">
             <template #default="{ row }">
               <div class="flex gap-2">
                 <button @click="showEditDialog(row)" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-bold transition-colors">
                   编辑
                 </button>
-                <button 
+                <button
+                  @click="showResetPasswordDialog(row)"
+                  class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-xs font-bold transition-colors"
+                >
+                  重置密码
+                </button>
+                <button
                   @click="toggleUserStatus(row)"
                   class="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
                   :class="row.is_active ? 'bg-yellow-50 hover:bg-yellow-100 text-yellow-600' : 'bg-green-50 hover:bg-green-100 text-green-600'"
@@ -189,12 +195,73 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- 重置密码对话框 -->
+    <el-dialog
+      v-model="resetPasswordDialogVisible"
+      title="重置用户密码"
+      width="500px"
+      @close="resetPasswordFormRef?.resetFields()"
+      class="!rounded-3xl"
+    >
+      <div class="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-xl">
+        <p class="text-sm text-yellow-800">
+          <el-icon class="mr-1"><Warning /></el-icon>
+          您正在重置用户 <strong>{{ resetPasswordForm.username }}</strong> 的密码
+        </p>
+      </div>
+
+      <el-form
+        ref="resetPasswordFormRef"
+        :model="resetPasswordForm"
+        :rules="resetPasswordRules"
+        label-width="100px"
+        class="mt-4"
+      >
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input
+            v-model="resetPasswordForm.newPassword"
+            type="password"
+            placeholder="请输入新密码（6-100字符）"
+            show-password
+            class="custom-input"
+          />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input
+            v-model="resetPasswordForm.confirmPassword"
+            type="password"
+            placeholder="请再次输入新密码"
+            show-password
+            class="custom-input"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button
+            @click="resetPasswordDialogVisible = false"
+            class="px-5 py-2 rounded-xl text-gray-600 font-bold hover:bg-gray-100 transition-colors"
+          >
+            取消
+          </button>
+          <button
+            @click="resetPassword"
+            :disabled="resettingPassword"
+            class="px-5 py-2 bg-black text-white rounded-xl font-bold hover:bg-gray-800 transition-colors shadow-lg shadow-black/20 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {{ resettingPassword ? '重置中...' : '确认重置' }}
+          </button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Search, Warning } from '@element-plus/icons-vue'
 import { authApi } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import type { User, UserListParams } from '@/api/auth'
@@ -230,6 +297,17 @@ const isEdit = ref(false)
 const submitting = ref(false)
 const formRef = ref<FormInstance>()
 
+// 重置密码对话框状态
+const resetPasswordDialogVisible = ref(false)
+const resetPasswordForm = reactive({
+  userId: 0,
+  username: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+const resetPasswordFormRef = ref<FormInstance>()
+const resettingPassword = ref(false)
+
 // 用户表单
 const userForm = reactive({
   id: 0,
@@ -256,6 +334,27 @@ const formRules = {
   ],
   role: [
     { required: true, message: '请选择角色', trigger: 'change' }
+  ]
+}
+
+// 重置密码表单验证规则
+const resetPasswordRules = {
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, max: 100, message: '密码长度在 6 到 100 个字符', trigger: 'blur' }
+  ],
+  confirmPassword: [
+    { required: true, message: '请确认新密码', trigger: 'blur' },
+    {
+      validator: (rule: any, value: string, callback: Function) => {
+        if (value !== resetPasswordForm.newPassword) {
+          callback(new Error('两次输入的密码不一致'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur'
+    }
   ]
 }
 
@@ -442,6 +541,58 @@ const deleteUser = async (user: User) => {
       console.error('删除用户失败:', error)
       ElMessage.error(error.response?.data?.detail || '删除失败')
     }
+  }
+}
+
+// 显示重置密码对话框
+const showResetPasswordDialog = (user: User) => {
+  resetPasswordForm.userId = user.id
+  resetPasswordForm.username = user.username
+  resetPasswordForm.newPassword = ''
+  resetPasswordForm.confirmPassword = ''
+  resetPasswordDialogVisible.value = true
+
+  // 清除之前的验证错误
+  nextTick(() => {
+    resetPasswordFormRef.value?.clearValidate()
+  })
+}
+
+// 重置密码
+const resetPassword = async () => {
+  if (!resetPasswordFormRef.value) return
+
+  try {
+    await resetPasswordFormRef.value.validate()
+
+    // 二次确认
+    await ElMessageBox.confirm(
+      `确定要重置用户 "${resetPasswordForm.username}" 的密码吗？`,
+      '确认重置密码',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: '!bg-black !border-black',
+      }
+    )
+
+    resettingPassword.value = true
+
+    await authApi.resetUserPassword(
+      resetPasswordForm.userId,
+      resetPasswordForm.newPassword
+    )
+
+    ElMessage.success('密码重置成功')
+    resetPasswordDialogVisible.value = false
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      console.error('重置密码失败:', error)
+      ElMessage.error(error.response?.data?.detail || '重置失败')
+    }
+  } finally {
+    resettingPassword.value = false
   }
 }
 
