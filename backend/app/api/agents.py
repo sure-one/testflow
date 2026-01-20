@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.core.dependencies import get_current_active_user
 from app.models.user import User
+from app.services.async_task_manager import task_manager
 from app.services.agent_service_real import agent_service_real as agent_service
 from app.schemas.user import User as UserSchema
 
@@ -214,8 +215,9 @@ async def generate_test_points_async(
     batch_size = max(2, concurrency * 2)
     total_batches = (len(request.requirement_points) + batch_size - 1) // batch_size
     
-    # 创建异步任务
+    # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_point_generation", total_batches)
+    task_manager.set_task_user_id(task_id, current_user.id)
     task_manager.start_task(task_id)
     
     # 获取agent_id
@@ -357,8 +359,9 @@ async def design_test_cases_async(
     # 总批次 = 生成批次 * 2（生成占50%，优化占50%）
     total_batches = generation_batches * 2
     
-    # 创建异步任务
+    # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_case_design", total_batches)
+    task_manager.set_task_user_id(task_id, current_user.id)
     task_manager.start_task(task_id)
     
     # 获取设计智能体ID
@@ -625,8 +628,9 @@ async def optimize_test_cases_batch(
     # 计算批次数（每个用例作为一个批次）
     total_batches = len(request.test_cases)
     
-    # 创建异步任务
+    # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_case_optimization", total_batches)
+    task_manager.set_task_user_id(task_id, current_user.id)
     task_manager.start_task(task_id)
     
     # 获取agent_id

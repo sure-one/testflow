@@ -103,7 +103,8 @@ import {
   Expand,
   Fold,
   Search,
-  SwitchButton
+  SwitchButton,
+  List
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -123,6 +124,7 @@ const currentRouteTitle = computed(() => route.meta.title || '仪表盘')
 const menuItems = [
   { title: '仪表盘', index: '/', icon: House },
   { title: '项目管理', index: '/projects', icon: Folder },
+  { title: '任务管理', index: '/task-management', icon: List, adminOnly: true },
   { title: '模型广场', index: '/model-plaza', icon: Shop, adminOnly: true },
   { title: '智能体配置', index: '/agent-config', icon: Operation, adminOnly: true },
   { title: '用户管理', index: '/users', icon: User, adminOnly: true },

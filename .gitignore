@@ -73,6 +73,8 @@ backend/logs/
 .vite-temp/
 dist/
 .cache/
+frontend/components.d.ts
+frontend/auto-imports.d.ts
 
 # ========================================
 # Uploads (user generated content)
@@ -125,3 +127,11 @@ backend/app/prompts_optimized.py
 test/
 
 1/
+
+
+# ========================================
+# Claude Code 
+# ========================================
+.claude
+.spec-workflow
+CLAUDE.md

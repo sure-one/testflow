@@ -2,6 +2,7 @@
 异步任务管理器
 用于管理后台异步任务，支持并发处理和状态轮询
 支持从系统设置加载并发配置
+支持数据库持久化任务状态
 """
 import asyncio
 import uuid
@@ -77,15 +78,21 @@ class AsyncTaskManager:
         self._tasks: Dict[str, AsyncTask] = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._pending_queue: List[str] = []  # 等待执行的任务队列
-        
+
         # 并发配置（从系统设置加载）
         self._max_concurrent_tasks: int = self.DEFAULT_MAX_CONCURRENT_TASKS
         self._task_timeout: int = self.DEFAULT_TASK_TIMEOUT
         self._retry_count: int = self.DEFAULT_RETRY_COUNT
         self._queue_size: int = self.DEFAULT_QUEUE_SIZE
-        
+
         # 配置是否已加载
         self._config_loaded: bool = False
+
+        # 数据库会话（用于持久化）
+        self._db: Optional["Session"] = None
+
+        # 用户 ID 缓存（task_id -> user_id 映射）
+        self._task_user_ids: Dict[str, int] = {}
     
     def load_config_from_db(self, db: "Session") -> None:
         """从数据库加载并发配置
@@ -146,7 +153,85 @@ class AsyncTaskManager:
     def config_loaded(self) -> bool:
         """配置是否已从数据库加载"""
         return self._config_loaded
-    
+
+    def set_db_session(self, db: Optional["Session"]) -> None:
+        """设置数据库会话（用于持久化）
+
+        Args:
+            db: 数据库会话
+        """
+        self._db = db
+
+    def set_task_user_id(self, task_id: str, user_id: int) -> None:
+        """设置任务的用户 ID
+
+        Args:
+            task_id: 任务 ID
+            user_id: 用户 ID
+        """
+        self._task_user_ids[task_id] = user_id
+
+    def _sync_to_db(self, task_id: str, task: AsyncTask) -> None:
+        """同步任务状态到数据库
+
+        Args:
+            task_id: 任务 ID
+            task: 任务对象
+        """
+        from app.database import SessionLocal
+
+        # 每次同步时创建新的数据库会话，避免使用已关闭的会话
+        db = SessionLocal()
+        try:
+            from app.models.task import AsyncTask as AsyncTaskModel
+
+            db_task = db.query(AsyncTaskModel).filter(
+                AsyncTaskModel.task_id == task_id
+            ).first()
+
+            if db_task:
+                # 更新现有记录
+                db_task.status = AsyncTaskStatus(task.status.value)
+                db_task.progress = task.progress
+                db_task.total_batches = task.total_batches
+                db_task.completed_batches = task.completed_batches
+                db_task.message = task.message
+                db_task.result = task.result
+                db_task.error = task.error
+                db_task.started_at = task.started_at
+                db_task.completed_at = task.completed_at
+            else:
+                # 创建新记录
+                user_id = self._task_user_ids.get(task_id)
+                if not user_id:
+                    print(f"[AsyncTaskManager] 警告: 任务 {task_id} 没有 user_id，跳过数据库写入")
+                    return
+
+                db_task = AsyncTaskModel(
+                    task_id=task_id,
+                    task_type=task.task_type,
+                    status=AsyncTaskStatus(task.status.value),
+                    progress=task.progress,
+                    total_batches=task.total_batches,
+                    completed_batches=task.completed_batches,
+                    message=task.message,
+                    result=task.result,
+                    error=task.error,
+                    user_id=user_id,
+                    created_at=task.created_at,
+                    started_at=task.started_at,
+                    completed_at=task.completed_at
+                )
+                db.add(db_task)
+
+            db.commit()
+            print(f"[AsyncTaskManager] 任务 {task_id} 已同步到数据库")
+        except Exception as e:
+            print(f"[AsyncTaskManager] 同步到数据库失败: {e}")
+            db.rollback()
+        finally:
+            db.close()
+
     def get_running_task_count(self) -> int:
         """获取当前正在运行的任务数"""
         return sum(1 for task in self._tasks.values() 
@@ -225,7 +310,12 @@ class AsyncTaskManager:
         return None
     
     def update_task_progress(self, task_id: str, completed_batches: int):
-        """更新任务进度（基于批次数）"""
+        """更新任务进度（基于批次数）
+
+        Args:
+            task_id: 任务 ID
+            completed_batches: 已完成批次数
+        """
         task = self._tasks.get(task_id)
         if task:
             task.completed_batches = completed_batches
@@ -233,12 +323,15 @@ class AsyncTaskManager:
                 # 进度范围：5% ~ 95%（留5%给启动，5%给保存）
                 raw_progress = (completed_batches / task.total_batches) * 90
                 task.progress = int(5 + raw_progress)
-    
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
     def update_progress(self, task_id: str, progress: int, message: str = None):
         """直接设置任务进度百分比
-        
+
         Args:
-            task_id: 任务ID
+            task_id: 任务 ID
             progress: 进度百分比（0-100）
             message: 可选的进度消息
         """
@@ -247,109 +340,171 @@ class AsyncTaskManager:
             task.progress = min(max(progress, 0), 100)
             if message:
                 task.message = message
-    
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
     def start_task(self, task_id: str) -> bool:
         """标记任务开始
-        
+
         Args:
-            task_id: 任务ID
-            
+            task_id: 任务 ID
+
         Returns:
-            是否成功启动（如果达到并发限制则返回False）
+            是否成功启动（如果达到并发限制则返回 False）
         """
         task = self._tasks.get(task_id)
         if not task:
             return False
-        
+
         # 检查是否可以启动
         if not self.can_start_new_task() and task_id not in self._pending_queue:
             # 如果不能启动且不在队列中，加入队列
             self._pending_queue.append(task_id)
             return False
-        
+
         # 从等待队列中移除
         if task_id in self._pending_queue:
             self._pending_queue.remove(task_id)
-        
+
         task.status = AsyncTaskStatus.RUNNING
         task.started_at = datetime.utcnow()
         task.progress = 5  # 设置初始进度，表示任务已开始
+
+        # 同步到数据库
+        self._sync_to_db(task_id, task)
+
         return True
     
     def complete_task(self, task_id: str, result: Any):
-        """标记任务完成"""
+        """标记任务完成
+
+        Args:
+            task_id: 任务 ID
+            result: 任务结果
+        """
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.COMPLETED
             task.progress = 100
             task.result = result
             task.completed_at = datetime.utcnow()
-        
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
         # 清理运行中的任务
         if task_id in self._running_tasks:
             del self._running_tasks[task_id]
-        
+
+        # 清理用户 ID 缓存
+        if task_id in self._task_user_ids:
+            del self._task_user_ids[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
-    
+
     def fail_task(self, task_id: str, error: str):
-        """标记任务失败"""
+        """标记任务失败
+
+        Args:
+            task_id: 任务 ID
+            error: 错误信息
+        """
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.FAILED
             task.error = error
             task.completed_at = datetime.utcnow()
-        
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
         # 清理运行中的任务
         if task_id in self._running_tasks:
             del self._running_tasks[task_id]
-        
+
+        # 清理用户 ID 缓存
+        if task_id in self._task_user_ids:
+            del self._task_user_ids[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
-    
+
     def timeout_task(self, task_id: str):
         """标记任务超时
-        
+
         当任务执行时间超过配置的超时时间时调用
-        
+
         Args:
-            task_id: 任务ID
+            task_id: 任务 ID
         """
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.TIMEOUT
             task.error = f"任务执行超时（超过{self._task_timeout}秒）"
             task.completed_at = datetime.utcnow()
-        
-        # 取消正在运行的asyncio任务
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
+            # 异步广播（不阻塞主流程）
+            if self._websocket_manager:
+                asyncio.create_task(self._broadcast_update(task_id))
+
+        # 取消正在运行的 asyncio 任务
         if task_id in self._running_tasks:
             self._running_tasks[task_id].cancel()
             del self._running_tasks[task_id]
-        
+
+        # 清理用户 ID 缓存
+        if task_id in self._task_user_ids:
+            del self._task_user_ids[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
-    
+
     def cancel_task(self, task_id: str):
-        """取消任务"""
+        """取消任务
+
+        Args:
+            task_id: 任务 ID
+        """
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.CANCELLED
             task.completed_at = datetime.utcnow()
-        
+
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
+            # 异步广播（不阻塞主流程）
+            if self._websocket_manager:
+                asyncio.create_task(self._broadcast_update(task_id))
+
         # 从等待队列中移除
         if task_id in self._pending_queue:
             self._pending_queue.remove(task_id)
-        
-        # 取消正在运行的asyncio任务
+
+        # 取消正在运行的 asyncio 任务
         if task_id in self._running_tasks:
             self._running_tasks[task_id].cancel()
             del self._running_tasks[task_id]
-        
+
+        # 清理用户 ID 缓存
+        if task_id in self._task_user_ids:
+            del self._task_user_ids[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
-    
+
     def register_running_task(self, task_id: str, asyncio_task: asyncio.Task):
-        """注册正在运行的asyncio任务"""
+        """注册正在运行的 asyncio 任务
+
+        Args:
+            task_id: 任务 ID
+            asyncio_task: asyncio 任务对象
+        """
         self._running_tasks[task_id] = asyncio_task
     
     async def execute_with_timeout(self, task_id: str, coro) -> Any:

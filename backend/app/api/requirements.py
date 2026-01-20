@@ -743,8 +743,9 @@ async def generate_all_test_artifacts(
         "optimizer": optimizer_agent.id if optimizer_agent else fallback_agent.id
     }
     
-    # 创建异步任务
+    # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("one_click_generation", total_batches=100)
+    task_manager.set_task_user_id(task_id, current_user.id)
     task_manager.start_task(task_id)
     
     print(f"\n{'='*60}")
