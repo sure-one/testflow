@@ -5,6 +5,7 @@
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 
 from app.database import get_db
@@ -134,6 +135,52 @@ async def get_task_detail(
         task=task.to_dict_with_user(),
         messages=[]  # 预留：未来可以添加任务日志
     )
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """取消单个任务（管理员专用）
+
+    取消指定任务（仅 PENDING 或 RUNNING 状态的任务可以被取消）
+    """
+    # 检查任务是否在内存中
+    task = task_manager.get_task(task_id)
+    if task and task.status in [
+        AsyncTaskStatus.PENDING,
+        AsyncTaskStatus.RUNNING
+    ]:
+        task_manager.cancel_task(task_id)
+        db.commit()
+        return {"success": True, "message": f"任务 {task_id} 已取消"}
+
+    # 如果任务不在内存中，检查数据库
+    db_task = db.query(AsyncTask).filter(
+        AsyncTask.task_id == task_id
+    ).first()
+
+    if not db_task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务不存在: {task_id}"
+        )
+
+    if db_task.status in [
+        AsyncTaskStatus.PENDING,
+        AsyncTaskStatus.RUNNING
+    ]:
+        db_task.status = AsyncTaskStatus.CANCELLED
+        db_task.completed_at = func.now()
+        db.commit()
+        return {"success": True, "message": f"任务 {task_id} 已取消"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"任务状态为 {db_task.status.value}，无法取消"
+        )
 
 
 @router.post("/batch-cancel", response_model=BatchCancelResponse)
