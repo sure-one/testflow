@@ -104,16 +104,17 @@ async def get_config_info(config: settings = Depends(get_settings)):
 
 # 添加API路由
 from app.api import (
-    auth, 
+    auth,
     projects,
     modules,
-    requirements, 
+    requirements,
     ai_models,
     agents,
     system,
     test_data,
     settings,
-    project_test_cases
+    project_test_cases,
+    tasks      # 任务管理
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["认证"])
@@ -126,6 +127,7 @@ app.include_router(system.router, prefix="/api/system", tags=["系统管理"])
 app.include_router(ai_models.router, prefix="/api/ai", tags=["AI模型管理"])
 app.include_router(agents.router, prefix="/api/agents", tags=["智能体管理"])
 app.include_router(settings.router, prefix="/api/settings", tags=["系统设置"])
+app.include_router(tasks.router, prefix="/api/tasks", tags=["任务管理"])
 
 
 if __name__ == "__main__":

@@ -75,6 +75,12 @@ const router = createRouter({
           name: 'Settings',
           component: () => import('@/views/Settings.vue'),
           meta: { title: '系统设置', requiresAdmin: true }
+        },
+        {
+          path: '/task-management',
+          name: 'TaskManagement',
+          component: () => import('@/views/TaskManagement.vue'),
+          meta: { title: '任务管理', requiresAdmin: true }
         }
       ]
     },
