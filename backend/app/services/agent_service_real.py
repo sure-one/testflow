@@ -194,11 +194,9 @@ class AgentServiceReal:
 
         for attempt in range(max_attempts):
             try:
-                # 使用超时控制
-                result = await asyncio.wait_for(
-                    self._call_ai_once(config, user_prompt, image_paths),
-                    timeout=self._task_timeout
-                )
+                # 直接调用，不使用 asyncio.wait_for
+                # 超时由 httpx.AsyncClient 内部控制
+                result = await self._call_ai_once(config, user_prompt, image_paths)
 
                 # 估算响应 Token 和总 Token
                 response_tokens = self._estimate_tokens(result)
@@ -211,13 +209,13 @@ class AgentServiceReal:
 
                 return result
 
-            except asyncio.TimeoutError:
-                last_error = f"AI调用超时（超过{self._task_timeout}秒）"
-                print(f"⏱️ AI调用超时 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
-
             except Exception as e:
                 last_error = str(e)
-                print(f"❌ AI调用失败 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
+                # 检查是否是超时错误
+                if "超时" in str(e) or "timeout" in str(e).lower():
+                    print(f"⏱️ AI调用超时 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
+                else:
+                    print(f"❌ AI调用失败 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
 
             # 如果还有重试机会，等待后重试
             if attempt < max_attempts - 1:
@@ -228,57 +226,7 @@ class AgentServiceReal:
 
         # 所有重试都失败
         raise Exception(f"AI调用失败（已重试{self._retry_count}次）: {last_error}")
-    
-    async def _call_ai_with_parse(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> Dict[str, Any]:
-        """调用AI并解析JSON（带重试机制）
-        
-        整合了 AI 调用和 JSON 解析，任何环节失败都会触发重试
-        这样可以处理：
-        - 网络错误
-        - API 超时
-        - JSON 格式错误
-        - 响应截断
-        """
-        # 确保配置已加载
-        self._load_config()
-        
-        last_error = None
-        max_attempts = self._retry_count + 1
-        
-        for attempt in range(max_attempts):
-            try:
-                # 调用 AI
-                response = await asyncio.wait_for(
-                    self._call_ai_once(config, user_prompt, image_paths),
-                    timeout=self._task_timeout
-                )
-                
-                # 解析 JSON
-                result = self._parse_json(response)
-                
-                if attempt > 0:
-                    print(f"✅ AI调用并解析成功 (第 {attempt + 1} 次尝试)")
-                
-                return result
-                
-            except asyncio.TimeoutError:
-                last_error = f"AI调用超时（超过{self._task_timeout}秒）"
-                print(f"⏱️ AI调用超时 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
-                
-            except Exception as e:
-                last_error = str(e)
-                error_type = "JSON解析失败" if "无法解析JSON" in str(e) else "AI调用失败"
-                print(f"❌ {error_type} (尝试 {attempt + 1}/{max_attempts}): {last_error}")
-            
-            # 如果还有重试机会，等待后重试
-            if attempt < max_attempts - 1:
-                delay = self._retry_delay * (2 ** attempt)
-                print(f"⏳ 等待 {delay} 秒后重试...")
-                await asyncio.sleep(delay)
-        
-        # 所有重试都失败
-        raise Exception(f"AI调用失败（已重试{self._retry_count}次）: {last_error}")
-    
+
     async def _call_ai_with_parse(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """调用AI并解析JSON（带重试机制）
         
