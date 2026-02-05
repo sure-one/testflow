@@ -88,8 +88,17 @@
 
         <el-table-column prop="user.username" label="创建者" width="120" />
 
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click="handleViewLogs(row)"
+            >
+              <el-icon><Document /></el-icon>
+              日志
+            </el-button>
             <el-button
               v-if="canCancel(row.status)"
               link
@@ -99,7 +108,6 @@
             >
               取消
             </el-button>
-            <el-text v-else class="text-gray-400 text-xs">无操作</el-text>
           </template>
         </el-table-column>
       </el-table>
@@ -117,15 +125,22 @@
         @current-change="handlePageChange"
       />
     </div>
+
+    <!-- 日志对话框 -->
+    <TaskLogDialog
+      v-model="logDialogVisible"
+      :task-id="currentLogTaskId"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/date'
+import TaskLogDialog from './TaskLogDialog.vue'
 
 interface Props {
   status?: string | null
@@ -144,6 +159,10 @@ const pagination = reactive({
   pageSize: 20
 })
 
+// 日志对话框状态
+const logDialogVisible = ref(false)
+const currentLogTaskId = ref<string | null>(null)
+
 const hasCompletedTasks = computed(() => {
   return taskStore.tasks.some(t =>
     ['completed', 'failed', 'cancelled', 'timeout'].includes(t.status)
@@ -152,6 +171,11 @@ const hasCompletedTasks = computed(() => {
 
 const canCancel = (status: string) => {
   return ['pending', 'running'].includes(status)
+}
+
+const handleViewLogs = (row: any) => {
+  currentLogTaskId.value = row.task_id
+  logDialogVisible.value = true
 }
 
 const handleFilterChange = () => {
@@ -214,14 +238,6 @@ const handleCleanup = async () => {
     handleRefresh()
   } catch (error) {
     // 用户取消操作
-  }
-}
-
-// WebSocket 消息处理
-const handleTaskUpdate = (data: any) => {
-  console.log('[TaskList] 收到任务更新:', data)
-  if (data.type === 'task_update') {
-    taskStore.updateTask(data.task_id, data.data)
   }
 }
 

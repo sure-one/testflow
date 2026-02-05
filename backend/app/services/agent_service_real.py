@@ -281,70 +281,161 @@ class AgentServiceReal:
         
         # 所有重试都失败
         raise Exception(f"AI响应解析失败（已重试{self._retry_count}次）: {last_error}")
-    
+
+    def _clean_json_string(self, json_str: str) -> str:
+        """清理 JSON 字符串中的非法字符
+
+        主要处理 JSON 字符串值内部未转义的双引号问题。
+        AI 有时会返回类似 "content": "点击"登录"按钮" 的内容，
+        其中字符串值内部的引号没有被转义，导致 JSON 解析失败。
+
+        策略：使用简单的启发式规则识别并转义字符串值内部的引号。
+
+        Args:
+            json_str: 原始 JSON 字符串
+
+        Returns:
+            清理后的 JSON 字符串
+
+        Examples:
+            >>> _clean_json_string('{"content": "点击"登录"按钮"}')
+            '{"content": "点击\\"登录\\"按钮"}'
+        """
+        if not json_str:
+            return json_str
+
+        # 替换中文双引号为英文双引号（如果存在）
+        json_str = json_str.replace('"', '"').replace('"', '"')
+
+        # 替换中文单引号为英文单引号（如果存在）
+        json_str = json_str.replace(''', "'").replace(''', "'")
+
+        # 简单策略：使用正则表达式匹配 "key": "value" 模式
+        # 其中 value 可能包含未转义的引号
+        import re
+
+        # 匹配模式：": "...内容..." 后面跟着 , 或 } 或换行
+        # 这个模式会匹配整个字符串值，包括其中的引号
+        def fix_value_quotes(match):
+            prefix = match.group(1)  # ": "
+            value = match.group(2)    # 字符串值内容
+            suffix = match.group(3)   # " 后面的字符（, 或 } 等）
+
+            # 转义 value 中的所有双引号
+            fixed_value = value.replace('"', '\\"')
+
+            return f'{prefix}{fixed_value}{suffix}'
+
+        # 匹配 ": "value", 或 ": "value"} 或 ": "value"\n 等模式
+        # 使用非贪婪匹配，并且要求结尾是 ", 或 "} 或 "\n
+        pattern = r'(:\s*")([^"]*(?:"[^"]*)*?)("(?:\s*[,}\]\n\r]))'
+
+        # 多次应用，直到没有更多匹配
+        max_iterations = 5
+        for _ in range(max_iterations):
+            new_json_str = re.sub(pattern, fix_value_quotes, json_str, flags=re.MULTILINE)
+            if new_json_str == json_str:
+                break
+            json_str = new_json_str
+
+        return json_str
+
     def _parse_json(self, response: str) -> Dict[str, Any]:
-        """解析JSON，支持提取```json```代码块"""
-        # 1. 直接解析
+        """解析JSON，支持提取```json```代码块和自动清理非法字符"""
+        # 记录原始响应（用于日志）
+        original_response = response
+
+        # 1. 直接解析（先清理）
         try:
-            return json.loads(response)
+            cleaned = self._clean_json_string(response)
+            result = json.loads(cleaned)
+            print(f"✅ 直接JSON解析成功")
+            return result
         except Exception as e1:
             print(f"⚠️ 直接JSON解析失败: {str(e1)[:100]}")
-        
-        # 2. 提取 ```json ... ``` 代码块
+
+        # 2. 提取 ```json ... ``` 代码块（先清理）
         match = re.search(r'```json\s*([\s\S]*?)\s*```', response)
         if match:
             try:
-                return json.loads(match.group(1))
+                extracted = match.group(1)
+                cleaned = self._clean_json_string(extracted)
+                result = json.loads(cleaned)
+                print(f"✅ 代码块JSON解析成功")
+                return result
             except Exception as e2:
                 print(f"⚠️ 代码块JSON解析失败: {str(e2)[:100]}")
-        
-        # 3. 提取第一个 {...} 块
+
+        # 3. 提取第一个 {...} 块（先清理）
         match = re.search(r'\{[\s\S]*\}', response)
         if match:
             try:
-                return json.loads(match.group(0))
+                extracted = match.group(0)
+                cleaned = self._clean_json_string(extracted)
+                result = json.loads(cleaned)
+                print(f"✅ 花括号块JSON解析成功")
+                return result
             except Exception as e3:
                 print(f"⚠️ 花括号块JSON解析失败: {str(e3)[:100]}")
-        
-        # 保存完整响应到日志文件
+
+        # 保存完整响应到日志文件（增强版）
         from pathlib import Path
         from datetime import datetime
-        
+
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         log_file = log_dir / f"failed_response_{timestamp}.txt"
-        
+
+        # 统计问题
+        chinese_double_quotes = original_response.count('"') + original_response.count('"')
+        chinese_single_quotes = original_response.count(''') + original_response.count(''')
+
         try:
+            # 尝试清理后的版本（用于对比）
+            cleaned_for_log = self._clean_json_string(original_response)
+
             log_file.write_text(
                 f"{'='*80}\n"
                 f"AI响应JSON解析失败\n"
                 f"{'='*80}\n\n"
-                f"响应长度: {len(response)} 字符\n\n"
-                f"完整响应内容:\n"
+                f"响应长度: {len(original_response)} 字符\n"
+                f"清理后长度: {len(cleaned_for_log)} 字符\n\n"
+                f"检测到的问题:\n"
+                f"  - 中文双引号: {chinese_double_quotes} 处\n"
+                f"  - 中文单引号: {chinese_single_quotes} 处\n\n"
+                f"完整响应内容（原始）:\n"
                 f"{'-'*80}\n"
-                f"{response}\n"
+                f"{original_response}\n"
+                f"{'-'*80}\n\n"
+                f"清理后内容:\n"
+                f"{'-'*80}\n"
+                f"{cleaned_for_log}\n"
                 f"{'-'*80}\n",
                 encoding='utf-8'
             )
             print(f"📁 完整响应已保存到: {log_file}")
+            print(f"🔍 检测到 {chinese_double_quotes} 处中文双引号, {chinese_single_quotes} 处中文单引号")
         except Exception as save_err:
             print(f"⚠️ 保存日志文件失败: {save_err}")
-        
+
         # 打印原始响应用于调试
         print(f"\n{'='*80}")
         print(f"❌ JSON解析完全失败")
         print(f"{'='*80}")
-        print(f"响应长度: {len(response)} 字符")
+        print(f"响应长度: {len(original_response)} 字符")
+        print(f"检测到的问题:")
+        print(f"  - 中文双引号: {chinese_double_quotes} 处")
+        print(f"  - 中文单引号: {chinese_single_quotes} 处")
         print(f"原始响应 (前1000字符):")
-        print(response[:1000])
-        if len(response) > 1000:
-            print(f"\n... (省略 {len(response) - 1000} 字符) ...\n")
+        print(original_response[:1000])
+        if len(original_response) > 1000:
+            print(f"\n... (省略 {len(original_response) - 1000} 字符) ...\n")
             print(f"原始响应 (最后500字符):")
-            print(response[-500:])
+            print(original_response[-500:])
         print(f"{'='*80}\n")
-        
-        raise Exception(f"无法解析JSON: {response[:200]}...")
+
+        raise Exception(f"无法解析JSON: {original_response[:200]}...")
 
     # ==================== 核心方法 ====================
     
@@ -556,7 +647,7 @@ class AgentServiceReal:
                     print(f"🗑️  清空 {len(old_test_points)} 个旧测试点（及其关联的测试用例）")
                     for tp in old_test_points:
                         self.db.delete(tp)
-                    self.db.flush()
+                    self.db.commit()  # 立即提交，释放数据库锁
         
         try:
             all_points = []
@@ -1015,7 +1106,7 @@ class AgentServiceReal:
                 print(f"\n🗑️  清空现有数据: {len(existing_points)} 个需求点（及其关联的测试点和测试用例）")
                 for point in existing_points:
                     self.db.delete(point)
-                self.db.flush()
+                self.db.commit()  # 立即提交，释放数据库锁，避免与后台任务状态更新冲突
             
             # 生成需求点
             req_result = await self.analyze_requirements(

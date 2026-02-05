@@ -16,13 +16,18 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {}
 )
 
-# 为 SQLite 启用外键约束
+# 为 SQLite 启用外键约束和 WAL 模式
 if "sqlite" in settings.database_url:
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # 启用 WAL 模式，提高并发写入性能
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # 设置忙等待超时为10秒，避免 database is locked 错误
+        cursor.execute("PRAGMA busy_timeout=10000")
         cursor.close()
+        print("[Database] SQLite WAL 模式已启用，忙等待超时: 10000ms")
 
 # 创建会话工厂
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

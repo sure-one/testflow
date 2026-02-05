@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.models.user import User
-from app.models.task import AsyncTask, AsyncTaskStatus
+from app.models.task import AsyncTask, AsyncTaskStatus, AsyncTaskLog
 from app.services.async_task_manager import task_manager
 
 
@@ -50,6 +50,12 @@ class CleanupResponse(BaseModel):
     success: bool
     deleted_count: int
     message: str
+
+
+class TaskLogResponse(BaseModel):
+    """任务日志响应"""
+    logs: List[dict]
+    total: int
 
 
 # ============ API 端点 ============
@@ -229,3 +235,32 @@ async def get_task_stats(
         },
         "total": sum(count for _, count in stats)
     }
+
+
+@router.get("/{task_id}/logs", response_model=TaskLogResponse)
+async def get_task_logs(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """获取任务日志（管理员专用）
+
+    返回指定任务的所有日志记录，按时间倒序排列
+    """
+    # 检查任务是否存在
+    task = db.query(AsyncTask).filter(AsyncTask.task_id == task_id).first()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务不存在: {task_id}"
+        )
+
+    # 获取日志
+    logs = db.query(AsyncTaskLog).filter(
+        AsyncTaskLog.task_id == task_id
+    ).order_by(AsyncTaskLog.timestamp.desc()).all()
+
+    return TaskLogResponse(
+        logs=[log.to_dict() for log in logs],
+        total=len(logs)
+    )

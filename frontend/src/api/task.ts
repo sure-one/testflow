@@ -47,6 +47,19 @@ export interface TaskDetailResponse {
   messages: any[]
 }
 
+export interface TaskLogItem {
+  id: number
+  task_id: string
+  level: 'info' | 'warning' | 'error'
+  message: string
+  timestamp: string
+}
+
+export interface TaskLogResponse {
+  logs: TaskLogItem[]
+  total: number
+}
+
 export const taskApi = {
   /**
    * 获取任务列表
@@ -88,6 +101,13 @@ export const taskApi = {
    */
   getTaskStats(): Promise<{ stats: Record<string, number>; total: number }> {
     return request.get('/tasks/stats')
+  },
+
+  /**
+   * 获取任务日志
+   */
+  getTaskLogs(taskId: string): Promise<TaskLogResponse> {
+    return request.get(`/tasks/${taskId}/logs`)
   }
 }
 

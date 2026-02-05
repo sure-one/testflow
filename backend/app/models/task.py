@@ -2,7 +2,7 @@
 异步任务持久化模型
 用于将异步任务状态持久化到数据库，解决服务重启任务丢失问题
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum as SQLEnum, Index, ForeignKey, JSON
@@ -20,6 +20,62 @@ class AsyncTaskStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     TIMEOUT = "timeout"
+
+
+class TaskLogLevel(str, Enum):
+    """任务日志级别枚举"""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class AsyncTaskLog(Base):
+    """异步任务日志模型
+
+    用于记录异步任务执行过程中的日志信息
+    """
+    __tablename__ = "async_task_logs"
+
+    # 主键
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    # 关联任务
+    task_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("async_tasks.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+
+    # 日志内容
+    level: Mapped[TaskLogLevel] = mapped_column(
+        SQLEnum(TaskLogLevel),
+        default=TaskLogLevel.INFO
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # 时间戳
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True
+    )
+
+    # 关系
+    task: Mapped["AsyncTask"] = relationship("AsyncTask", back_populates="logs")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "level": self.level.value if isinstance(self.level, Enum) else self.level,
+            "message": self.message,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+        }
+
+    def __repr__(self) -> str:
+        return f"<AsyncTaskLog(id={self.id}, task_id={self.task_id}, level={self.level})>"
 
 
 class AsyncTask(Base):
@@ -52,6 +108,14 @@ class AsyncTask(Base):
     # 用户关联
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     creator: Mapped["User"] = relationship("User")
+
+    # 日志关联
+    logs: Mapped[List["AsyncTaskLog"]] = relationship(
+        "AsyncTaskLog",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="AsyncTaskLog.timestamp.desc()"
+    )
 
     # 时间戳
     created_at: Mapped[datetime] = mapped_column(
