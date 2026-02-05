@@ -53,6 +53,19 @@ export interface TaskLogItem {
   level: 'info' | 'warning' | 'error'
   message: string
   timestamp: string
+
+  // 扩展字段（可选）
+  step_name?: string
+  step_number?: number
+  total_steps?: number
+  duration_ms?: number
+  agent_name?: string
+  agent_type?: string
+  model_name?: string
+  provider?: string
+  estimated_tokens?: number
+  current_batch?: number
+  total_batches?: number
 }
 
 export interface TaskLogResponse {

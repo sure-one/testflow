@@ -54,6 +54,27 @@ class AsyncTaskLog(Base):
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # === 扩展字段：步骤信息 ===
+    step_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="步骤名称")
+    step_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="步骤序号(1-based)")
+    total_steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="总步骤数")
+
+    # === 扩展字段：执行时长 ===
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="执行时长(毫秒)")
+
+    # === 扩展字段：智能体和模型信息 ===
+    agent_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="智能体名称")
+    agent_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="智能体类型")
+    model_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, comment="模型名称")
+    provider: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="模型提供商")
+
+    # === 扩展字段：Token 使用量 ===
+    estimated_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="估算的Token数量")
+
+    # === 扩展字段：批次处理进度 ===
+    current_batch: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="当前批次号(1-based)")
+    total_batches: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, comment="总批次数")
+
     # 时间戳
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -65,13 +86,25 @@ class AsyncTaskLog(Base):
     task: Mapped["AsyncTask"] = relationship("AsyncTask", back_populates="logs")
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
+        """转换为字典格式（包含扩展字段）"""
         return {
             "id": self.id,
             "task_id": self.task_id,
             "level": self.level.value if isinstance(self.level, Enum) else self.level,
             "message": self.message,
-            "timestamp": self.timestamp.isoformat() if self.timestamp else None
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            # 扩展字段
+            "step_name": self.step_name,
+            "step_number": self.step_number,
+            "total_steps": self.total_steps,
+            "duration_ms": self.duration_ms,
+            "agent_name": self.agent_name,
+            "agent_type": self.agent_type,
+            "model_name": self.model_name,
+            "provider": self.provider,
+            "estimated_tokens": self.estimated_tokens,
+            "current_batch": self.current_batch,
+            "total_batches": self.total_batches,
         }
 
     def __repr__(self) -> str:

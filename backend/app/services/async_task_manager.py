@@ -342,13 +342,25 @@ class AsyncTaskManager:
         except Exception as e:
             print(f"[AsyncTaskManager] 添加到同步队列失败: {e}")
 
-    def add_log(self, task_id: str, message: str, level: str = "info") -> None:
-        """添加任务日志（异步方式，通过队列）
+    def add_log(self, task_id: str, message: str, level: str = "info", **kwargs) -> None:
+        """添加任务日志（异步方式，通过队列，支持扩展字段）
 
         Args:
             task_id: 任务 ID
             message: 日志消息
             level: 日志级别 (info/warning/error)
+            **kwargs: 扩展字段，包括:
+                - step_name: 步骤名称
+                - step_number: 步骤序号
+                - total_steps: 总步骤数
+                - duration_ms: 执行时长(毫秒)
+                - agent_name: 智能体名称
+                - agent_type: 智能体类型
+                - model_name: 模型名称
+                - provider: 提供商
+                - estimated_tokens: Token数量
+                - current_batch: 当前批次
+                - total_batches: 总批次数
         """
         try:
             # 确保工作线程已启动
@@ -360,9 +372,8 @@ class AsyncTaskManager:
                     print(f"[AsyncTaskManager] 警告: 不在异步上下文中，无法添加日志")
                     return
 
-            # 将日志请求放入队列（使用特殊标记区分任务同步和日志添加）
-            # 格式: (task_id, None, log_data_dict)
-            log_data = {"type": "log", "level": level, "message": message}
+            # 将日志请求放入队列（包含扩展字段）
+            log_data = {"type": "log", "level": level, "message": message, **kwargs}
             try:
                 self._db_queue.put_nowait((task_id, log_data))
             except asyncio.QueueFull:
@@ -371,7 +382,7 @@ class AsyncTaskManager:
             print(f"[AsyncTaskManager] 添加日志到队列失败: {e}")
 
     async def _do_add_log(self, task_id: str, log_data: dict) -> None:
-        """实际执行日志添加（异步版本）
+        """实际执行日志添加（异步版本，支持扩展字段）
 
         使用类级别锁确保串行化写入，避免并发冲突。
 
@@ -392,10 +403,23 @@ class AsyncTaskManager:
                 # 验证日志级别
                 log_level = TaskLogLevel(level) if level in [e.value for e in TaskLogLevel] else TaskLogLevel.INFO
 
+                # 创建日志条目（包含扩展字段）
                 log_entry = AsyncTaskLog(
                     task_id=task_id,
                     level=log_level,
-                    message=message
+                    message=message,
+                    # 扩展字段
+                    step_name=log_data.get("step_name"),
+                    step_number=log_data.get("step_number"),
+                    total_steps=log_data.get("total_steps"),
+                    duration_ms=log_data.get("duration_ms"),
+                    agent_name=log_data.get("agent_name"),
+                    agent_type=log_data.get("agent_type"),
+                    model_name=log_data.get("model_name"),
+                    provider=log_data.get("provider"),
+                    estimated_tokens=log_data.get("estimated_tokens"),
+                    current_batch=log_data.get("current_batch"),
+                    total_batches=log_data.get("total_batches"),
                 )
                 db.add(log_entry)
                 db.commit()
@@ -759,7 +783,94 @@ class AsyncTaskManager:
                 del self._running_tasks[task_id]
             if task_id in self._pending_queue:
                 self._pending_queue.remove(task_id)
-    
+
+    def add_step_log(
+        self,
+        task_id: str,
+        step_name: str,
+        step_number: int,
+        total_steps: int,
+        message: str,
+        level: str = "info"
+    ) -> None:
+        """记录步骤日志（便捷方法）
+
+        Args:
+            task_id: 任务 ID
+            step_name: 步骤名称（如"需求拆分"、"测试点生成"）
+            step_number: 步骤序号（从1开始）
+            total_steps: 总步骤数
+            message: 日志消息
+            level: 日志级别
+        """
+        self.add_log(
+            task_id,
+            message,
+            level,
+            step_name=step_name,
+            step_number=step_number,
+            total_steps=total_steps
+        )
+
+    def add_batch_log(
+        self,
+        task_id: str,
+        current_batch: int,
+        total_batches: int,
+        message: str,
+        level: str = "info"
+    ) -> None:
+        """记录批次日志（便捷方法）
+
+        Args:
+            task_id: 任务 ID
+            current_batch: 当前批次号（从1开始）
+            total_batches: 总批次数
+            message: 日志消息
+            level: 日志级别
+        """
+        self.add_log(
+            task_id,
+            message,
+            level,
+            current_batch=current_batch,
+            total_batches=total_batches
+        )
+
+    def add_agent_log(
+        self,
+        task_id: str,
+        agent_name: str,
+        agent_type: str,
+        model_name: str,
+        provider: str,
+        message: str,
+        level: str = "info",
+        estimated_tokens: int = None
+    ) -> None:
+        """记录智能体调用日志（便捷方法）
+
+        Args:
+            task_id: 任务 ID
+            agent_name: 智能体名称（如"需求拆分 Agent"）
+            agent_type: 智能体类型（如"REQUIREMENT_SPLITTER"）
+            model_name: 模型名称（如"gpt-4-turbo-preview"）
+            provider: 提供商（如"openai"、"anthropic"）
+            message: 日志消息
+            level: 日志级别
+            estimated_tokens: 估算的 Token 数量
+        """
+        self.add_log(
+            task_id,
+            message,
+            level,
+            agent_name=agent_name,
+            agent_type=agent_type,
+            model_name=model_name,
+            provider=provider,
+            estimated_tokens=estimated_tokens
+        )
+
     def get_config_info(self) -> Dict[str, Any]:
         """获取当前配置信息
         

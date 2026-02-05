@@ -130,7 +130,39 @@ class AgentServiceReal:
             "max_tokens": agent.max_tokens,
             "system_prompt": agent.system_prompt
         }
-    
+
+    def _estimate_tokens(self, text: str) -> int:
+        """估算文本的 Token 数量（手动方式）
+
+        估算规则：
+        - 中文：约 1.5 字符 = 1 Token
+        - 英文：约 4 字符 = 1 Token
+        - 混合：根据中文字符比例选择规则
+
+        Args:
+            text: 要估算的文本
+
+        Returns:
+            估算的 Token 数量
+        """
+        if not text:
+            return 0
+
+        # 统计中文字符数量
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        total_chars = len(text)
+
+        # 计算中文比例
+        chinese_ratio = chinese_chars / total_chars if total_chars > 0 else 0
+
+        # 根据中文比例选择估算规则
+        if chinese_ratio > 0.3:
+            # 主要是中文：约 1.5 字符 = 1 Token
+            return int(total_chars / 1.5)
+        else:
+            # 主要是英文：约 4 字符 = 1 Token
+            return int(total_chars / 4)
+
     async def _call_ai_once(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> str:
         """单次调用AI（不带重试）"""
         if image_paths:
@@ -147,16 +179,19 @@ class AgentServiceReal:
     
     async def _call_ai(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> str:
         """调用AI（带重试和超时机制）
-        
+
         使用系统设置中的 retry_count 和 task_timeout 参数
         采用指数退避策略进行重试
         """
         # 确保配置已加载
         self._load_config()
-        
+
+        # 估算请求 Token
+        request_tokens = self._estimate_tokens(user_prompt)
+
         last_error = None
         max_attempts = self._retry_count + 1  # 重试次数 + 首次尝试
-        
+
         for attempt in range(max_attempts):
             try:
                 # 使用超时控制
@@ -164,27 +199,33 @@ class AgentServiceReal:
                     self._call_ai_once(config, user_prompt, image_paths),
                     timeout=self._task_timeout
                 )
-                
+
+                # 估算响应 Token 和总 Token
+                response_tokens = self._estimate_tokens(result)
+                total_tokens = request_tokens + response_tokens
+
                 if attempt > 0:
-                    print(f"✅ AI调用成功 (第 {attempt + 1} 次尝试)")
-                
+                    print(f"✅ AI调用成功 (第 {attempt + 1} 次尝试) - Token: {total_tokens}")
+                else:
+                    print(f"✅ AI调用成功 - Token: {total_tokens} (请求: {request_tokens}, 响应: {response_tokens})")
+
                 return result
-                
+
             except asyncio.TimeoutError:
                 last_error = f"AI调用超时（超过{self._task_timeout}秒）"
                 print(f"⏱️ AI调用超时 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
-                
+
             except Exception as e:
                 last_error = str(e)
                 print(f"❌ AI调用失败 (尝试 {attempt + 1}/{max_attempts}): {last_error}")
-            
+
             # 如果还有重试机会，等待后重试
             if attempt < max_attempts - 1:
                 # 指数退避：1s, 2s, 4s, 8s...
                 delay = self._retry_delay * (2 ** attempt)
                 print(f"⏳ 等待 {delay} 秒后重试...")
                 await asyncio.sleep(delay)
-        
+
         # 所有重试都失败
         raise Exception(f"AI调用失败（已重试{self._retry_count}次）: {last_error}")
     
@@ -776,12 +817,33 @@ class AgentServiceReal:
             ]
             
             print(f"📦 智能分组: {len(test_points)} 个测试点 → {len(batches)} 个批次（每批最多{BATCH_SIZE}个）")
-            
+
+            # 记录批次处理开始
+            if task_id:
+                task_manager.add_batch_log(
+                    task_id,
+                    current_batch=0,
+                    total_batches=len(batches),
+                    message=f"开始批量生成测试用例，共 {len(batches)} 个批次",
+                    level="info"
+                )
+
             async def process_batch(batch, batch_idx):
                 nonlocal completed, total_saved
                 async with semaphore:
                     try:
                         batch_size = len(batch)
+
+                        # 记录批次开始
+                        if task_id:
+                            task_manager.add_batch_log(
+                                task_id,
+                                current_batch=batch_idx + 1,
+                                total_batches=len(batches),
+                                message=f"处理批次 {batch_idx + 1}/{len(batches)}，包含 {batch_size} 个测试点",
+                                level="info"
+                            )
+
                         print(f"\n🔄 批次 {batch_idx+1}/{len(batches)}: 处理 {batch_size} 个测试点")
                         
                         # 批量调用AI（一次生成多个）
@@ -822,7 +884,17 @@ class AgentServiceReal:
                                 raw_progress = (completed / len(test_points)) * 100
                                 scaled_progress = progress_offset + raw_progress * progress_scale
                                 task_manager.update_progress(task_id, int(scaled_progress))
-                        
+
+                        # 记录批次完成
+                        if task_id:
+                            task_manager.add_batch_log(
+                                task_id,
+                                current_batch=batch_idx + 1,
+                                total_batches=len(batches),
+                                message=f"批次 {batch_idx + 1}/{len(batches)} 完成，生成 {len(cases)} 个测试用例",
+                                level="info"
+                            )
+
                         print(f"✅ 批次 {batch_idx+1}/{len(batches)}: 完成，生成 {len(cases)} 个用例")
                         return cases
                         
@@ -840,6 +912,17 @@ class AgentServiceReal:
                         print(f"\n完整堆栈:")
                         traceback.print_exc()
                         print(f"{'='*80}\n")
+
+                        # 记录批次失败
+                        if task_id:
+                            task_manager.add_batch_log(
+                                task_id,
+                                current_batch=batch_idx + 1,
+                                total_batches=len(batches),
+                                message=f"批次 {batch_idx + 1}/{len(batches)} 失败: {str(e)}",
+                                level="error"
+                            )
+
                         # 标记批次失败，但继续处理其他批次
                         async with lock:
                             completed += len(batch)
@@ -1086,9 +1169,37 @@ class AgentServiceReal:
         
         try:
             # ========== 阶段1：生成需求点 (0-25%) ==========
+            # 记录步骤开始
             if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="需求拆分",
+                    step_number=1,
+                    total_steps=4,
+                    message="开始执行步骤 1/4：需求拆分",
+                    level="info"
+                )
                 task_manager.update_progress(task_id, 0, "正在分析需求文档...")
-            
+
+                # 获取并记录智能体信息
+                from app.models.ai_config import Agent
+                agent = self.db.query(Agent).filter(Agent.id == agent_ids.get("requirement")).first()
+                if agent:
+                    from app.models.ai_config import AIModel
+                    ai_model = self.db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first()
+                    if ai_model:
+                        request_tokens = self._estimate_tokens(requirement_content)
+                        task_manager.add_agent_log(
+                            task_id,
+                            agent_name=agent.name,
+                            agent_type="REQUIREMENT_SPLITTER",
+                            model_name=ai_model.model_id,
+                            provider=ai_model.provider or "openai",
+                            message=f"调用智能体分析需求文档（输入约 {request_tokens} Token）",
+                            level="info",
+                            estimated_tokens=request_tokens
+                        )
+
             print("\n" + "="*60)
             print("🚀 开始完整生成流程")
             print("="*60)
@@ -1152,9 +1263,27 @@ class AgentServiceReal:
                 self.db.refresh(rp)
             
             if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="需求拆分",
+                    step_number=1,
+                    total_steps=4,
+                    message=f"需求拆分完成，生成 {len(requirement_points)} 个需求点",
+                    level="info"
+                )
                 task_manager.update_progress(task_id, 25, f"需求点生成完成，共 {len(requirement_points)} 个")
-            
+
             # ========== 阶段2：生成测试点 (25-50%) ==========
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试点生成",
+                    step_number=2,
+                    total_steps=4,
+                    message="开始执行步骤 2/4：测试点生成",
+                    level="info"
+                )
+
             print(f"\n🔄 [2/4] 开始生成测试点...")
             
             req_points_for_generation = [{"id": rp.id, "content": rp.content} for rp in requirement_points]
@@ -1199,9 +1328,27 @@ class AgentServiceReal:
                 self.db.refresh(tp)
             
             if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试点生成",
+                    step_number=2,
+                    total_steps=4,
+                    message=f"测试点生成完成，生成 {len(test_points)} 个测试点",
+                    level="info"
+                )
                 task_manager.update_progress(task_id, 50, f"测试点生成完成，共 {len(test_points)} 个")
-            
+
             # ========== 阶段3：生成测试用例 (50-85%) ==========
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例设计",
+                    step_number=3,
+                    total_steps=4,
+                    message="开始执行步骤 3/4：测试用例设计",
+                    level="info"
+                )
+
             print(f"\n🔄 [3/4] 开始生成测试用例...")
             
             # 传递完整的测试点数据（包含所有必要字段）
@@ -1292,9 +1439,27 @@ class AgentServiceReal:
             print(f"💾 已保存到数据库: {len(saved_test_cases_for_optimization)} 个测试用例")
             
             if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例设计",
+                    step_number=3,
+                    total_steps=4,
+                    message=f"测试用例设计完成，生成 {len(generated_cases)} 个测试用例",
+                    level="info"
+                )
                 task_manager.update_progress(task_id, 75, f"测试用例生成完成，共 {len(generated_cases)} 个")
-            
+
             # ========== 阶段4：优化测试用例 (75-100%) ==========
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例优化",
+                    step_number=4,
+                    total_steps=4,
+                    message="开始执行步骤 4/4：测试用例优化",
+                    level="info"
+                )
+
             print(f"\n🔄 [4/4] 开始优化测试用例...")
             
             # 检查是否有测试用例需要优化
@@ -1372,6 +1537,14 @@ class AgentServiceReal:
             
             # 然后标记任务完成
             if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例优化",
+                    step_number=4,
+                    total_steps=4,
+                    message=f"测试用例优化完成，优化 {optimized_count} 个测试用例",
+                    level="info"
+                )
                 task_manager.update_progress(task_id, 100, "生成完成！")
                 result_data = {
                     "requirement_points_count": len(requirement_points),

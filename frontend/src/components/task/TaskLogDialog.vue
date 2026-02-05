@@ -2,10 +2,32 @@
   <el-dialog
     v-model="visible"
     title="任务日志"
-    width="700px"
+    width="800px"
     :close-on-click-modal="false"
     @close="handleClose"
   >
+    <!-- 统计面板 -->
+    <div v-if="statistics" class="statistics-panel mb-4 p-4 bg-gray-50 rounded-lg">
+      <div class="grid grid-cols-4 gap-4">
+        <div class="text-center">
+          <div class="text-2xl font-bold text-gray-900">{{ statistics.totalSteps }}</div>
+          <div class="text-xs text-gray-500">总步骤</div>
+        </div>
+        <div class="text-center">
+          <div class="text-2xl font-bold text-gray-900">{{ formatNumber(statistics.totalTokens) }}</div>
+          <div class="text-xs text-gray-500">总 Token</div>
+        </div>
+        <div class="text-center">
+          <div class="text-2xl font-bold text-gray-900">{{ formatDuration(statistics.totalDuration) }}</div>
+          <div class="text-xs text-gray-500">总时长</div>
+        </div>
+        <div class="text-center">
+          <div class="text-2xl font-bold text-gray-900">{{ statistics.totalBatches }}</div>
+          <div class="text-xs text-gray-500">总批次</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 过滤器 -->
     <div class="flex items-center gap-4 mb-4">
       <el-select
@@ -34,11 +56,50 @@
           :timestamp="formatDateTime(log.timestamp)"
           placement="top"
         >
-          <div class="flex items-start gap-2">
-            <el-tag :type="getLogTagType(log.level)" size="small">
-              {{ getLogLevelLabel(log.level) }}
-            </el-tag>
-            <span class="log-message">{{ log.message }}</span>
+          <!-- 增强的日志卡片 -->
+          <div class="log-card">
+            <!-- 基本信息 -->
+            <div class="flex items-start gap-2 mb-2">
+              <el-tag :type="getLogTagType(log.level)" size="small">
+                {{ getLogLevelLabel(log.level) }}
+              </el-tag>
+              <span class="log-message flex-1">{{ log.message }}</span>
+            </div>
+
+            <!-- 扩展信息 -->
+            <div v-if="hasExtendedInfo(log)" class="extended-info mt-2 pt-2 border-t border-gray-100">
+              <!-- 步骤信息 -->
+              <div v-if="log.step_name" class="flex items-center gap-2 text-xs text-gray-600 mb-1">
+                <el-icon><Location /></el-icon>
+                <span>步骤 {{ log.step_number }}/{{ log.total_steps }}：{{ log.step_name }}</span>
+              </div>
+
+              <!-- 智能体信息 -->
+              <div v-if="log.agent_name" class="flex items-center gap-2 text-xs text-gray-600 mb-1">
+                <el-icon><User /></el-icon>
+                <span>{{ log.agent_name }}</span>
+                <el-tag size="small" type="info">{{ log.model_name }}</el-tag>
+                <span class="text-gray-400">({{ log.provider }})</span>
+              </div>
+
+              <!-- Token 信息 -->
+              <div v-if="log.estimated_tokens" class="flex items-center gap-2 text-xs text-gray-600 mb-1">
+                <el-icon><Coin /></el-icon>
+                <span>约 {{ formatNumber(log.estimated_tokens) }} Token</span>
+              </div>
+
+              <!-- 批次信息 -->
+              <div v-if="log.current_batch" class="flex items-center gap-2 text-xs text-gray-600 mb-1">
+                <el-icon><Files /></el-icon>
+                <span>批次 {{ log.current_batch }}/{{ log.total_batches }}</span>
+              </div>
+
+              <!-- 执行时长 -->
+              <div v-if="log.duration_ms" class="flex items-center gap-2 text-xs text-gray-600">
+                <el-icon><Clock /></el-icon>
+                <span>{{ formatDuration(log.duration_ms) }}</span>
+              </div>
+            </div>
           </div>
         </el-timeline-item>
       </el-timeline>
@@ -56,7 +117,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Location, User, Coin, Files, Clock } from '@element-plus/icons-vue'
 import { taskApi, type TaskLogItem } from '@/api/task'
 import { formatDateTime } from '@/utils/date'
 
@@ -84,6 +145,30 @@ const filteredLogs = computed(() => {
     return logs.value
   }
   return logs.value.filter(log => log.level === levelFilter.value)
+})
+
+// 统计信息
+const statistics = computed(() => {
+  if (logs.value.length === 0) return null
+
+  let totalTokens = 0
+  let totalDuration = 0
+  let totalSteps = 0
+  let totalBatches = 0
+
+  logs.value.forEach(log => {
+    if (log.estimated_tokens) totalTokens += log.estimated_tokens
+    if (log.duration_ms) totalDuration += log.duration_ms
+    if (log.step_number) totalSteps = Math.max(totalSteps, log.step_number)
+    if (log.total_batches) totalBatches = Math.max(totalBatches, log.total_batches)
+  })
+
+  return {
+    totalSteps,
+    totalTokens,
+    totalDuration,
+    totalBatches
+  }
 })
 
 const fetchLogs = async () => {
@@ -137,6 +222,33 @@ const getLogLevelLabel = (level: string) => {
   return labels[level] || level
 }
 
+// 检查日志是否有扩展信息
+const hasExtendedInfo = (log: TaskLogItem) => {
+  return !!(
+    log.step_name ||
+    log.agent_name ||
+    log.estimated_tokens ||
+    log.current_batch ||
+    log.duration_ms
+  )
+}
+
+// 格式化数字
+const formatNumber = (num: number) => {
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
+  return num.toString()
+}
+
+// 格式化时长
+const formatDuration = (ms: number) => {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.floor((ms % 60000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
 // 监听对话框打开
 watch(() => props.modelValue, (newValue) => {
   if (newValue && props.taskId) {
@@ -147,13 +259,28 @@ watch(() => props.modelValue, (newValue) => {
 
 <style scoped>
 .log-container {
-  max-height: 400px;
+  max-height: 500px;
   overflow-y: auto;
+}
+
+.log-card {
+  background: white;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .log-message {
   word-break: break-word;
   line-height: 1.5;
+}
+
+.extended-info {
+  font-size: 12px;
+}
+
+.statistics-panel {
+  border: 1px solid #e5e7eb;
 }
 
 :deep(.el-timeline-item__timestamp) {

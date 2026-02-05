@@ -9,10 +9,11 @@ from app.models.requirement_image import RequirementImage
 from app.models.testcase import TestPoint, TestCase, TestCaseReview
 from app.models.ai_config import AIModel, Agent, TaskLog
 from app.models.settings import TestCategory, TestDesignMethod, SystemConfig
+from app.models.task import AsyncTask, AsyncTaskLog
 
 __all__ = [
     "User",
-    "Project", 
+    "Project",
     "ProjectMember",
     "Module",
     "ModuleAssignment",
@@ -29,5 +30,7 @@ __all__ = [
     "TaskLog",
     "TestCategory",
     "TestDesignMethod",
-    "SystemConfig"
+    "SystemConfig",
+    "AsyncTask",
+    "AsyncTaskLog"
 ]
