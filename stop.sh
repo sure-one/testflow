@@ -23,17 +23,24 @@ stop_service() {
     if [ -f "$pid_file" ]; then
         local pid=$(cat "$pid_file")
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo -e "${YELLOW}正在停止 $name (PID: $pid)...${NC}"
+            echo -e "${YELLOW}正在停止 $name (PID: $pid) 及其子进程...${NC}"
+
+            # 先杀死所有子进程（uvicorn --reload 的工作进程）
+            pkill -P "$pid" 2>/dev/null
+
+            # 再杀死主进程
             kill "$pid" 2>/dev/null
+
             # 等待进程结束
             local count=0
             while kill -0 "$pid" 2>/dev/null && [ $count -lt 10 ]; do
                 sleep 0.5
                 count=$((count + 1))
             done
-            # 如果进程仍在运行，强制终止
+            # 如果进程仍在运行，强制终止（包括子进程）
             if kill -0 "$pid" 2>/dev/null; then
                 echo -e "${YELLOW}进程未响应，强制终止...${NC}"
+                pkill -9 -P "$pid" 2>/dev/null
                 kill -9 "$pid" 2>/dev/null
             fi
             echo -e "${GREEN}$name 已停止${NC}"

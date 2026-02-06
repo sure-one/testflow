@@ -1048,6 +1048,38 @@ class AsyncTaskManager:
             if task_id in self._pending_queue:
                 self._pending_queue.remove(task_id)
 
+    async def shutdown(self) -> None:
+        """优雅关闭任务管理器
+
+        停止所有后台任务，取消正在运行的 AI 调用任务，
+        并确保所有日志都被刷新到数据库。
+        """
+        print("[AsyncTaskManager] 开始关闭...")
+
+        # 1. 取消所有正在运行的 AI 调用任务
+        for task_id, asyncio_task in list(self._running_tasks.items()):
+            print(f"[AsyncTaskManager] 取消任务: {task_id}")
+            asyncio_task.cancel()
+            try:
+                await asyncio_task
+            except asyncio.CancelledError:
+                pass
+        self._running_tasks.clear()
+
+        # 2. 标记所有运行中的任务为取消状态
+        for task_id, task in list(self._tasks.items()):
+            if task.status == AsyncTaskStatus.RUNNING:
+                task.status = AsyncTaskStatus.CANCELLED
+                task.error = "服务关闭，任务被取消"
+                task.completed_at = datetime.utcnow()
+                # 同步到数据库（直接调用，不通过队列）
+                await self._do_sync_to_db(task_id, task)
+
+        # 3. 停止数据库写入工作线程（会先刷新日志缓冲区）
+        await self._stop_db_worker()
+
+        print("[AsyncTaskManager] 关闭完成")
+
     def add_step_log(
         self,
         task_id: str,

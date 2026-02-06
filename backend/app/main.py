@@ -49,7 +49,9 @@ async def lifespan(app: FastAPI):
     
     yield
     # 关闭时的清理工作
-    print("👋 应用关闭")
+    print("👋 应用关闭中...")
+    await task_manager.shutdown()
+    print("👋 应用关闭完成")
 
 
 # 创建FastAPI应用实例
