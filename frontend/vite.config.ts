@@ -43,6 +43,13 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       }
+    },
+    warmup: {
+      clientFiles: [
+        './src/views/**/*.vue',
+        './src/layouts/**/*.vue',
+        './src/components/**/*.vue'
+      ]
     }
   },
   build: {
