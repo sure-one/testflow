@@ -658,6 +658,9 @@ class AsyncTaskManager:
             # 记录日志
             self.add_log(task_id, f"任务执行超时（超过{self._task_timeout}秒）", "error")
 
+            # 添加控制台日志输出
+            print(f"❌ [AsyncTaskManager] 任务 {task_id} 执行超时（超过{self._task_timeout}秒）")
+
         # 取消正在运行的 asyncio 任务
         if task_id in self._running_tasks:
             self._running_tasks[task_id].cancel()

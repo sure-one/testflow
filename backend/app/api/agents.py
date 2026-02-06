@@ -234,17 +234,26 @@ async def generate_test_points_async(
     async def run_task():
         try:
             service = AgentServiceReal(db=db)
-            result = await service.execute_test_point_generation(
-                requirement_points=request.requirement_points,
-                user_id=current_user.id,
-                agent_id=agent_id,
-                task_id=task_id
+
+            # 使用 execute_with_timeout 包装任务执行
+            result = await task_manager.execute_with_timeout(
+                task_id,
+                service.execute_test_point_generation(
+                    requirement_points=request.requirement_points,
+                    user_id=current_user.id,
+                    agent_id=agent_id,
+                    task_id=task_id
+                )
             )
-            
+
             if result["success"]:
                 task_manager.complete_task(task_id, result.get("data"))
             else:
                 task_manager.fail_task(task_id, result.get("error", "未知错误"))
+        except asyncio.TimeoutError:
+            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
+            # 这里不需要额外操作
+            pass
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
     
@@ -521,15 +530,29 @@ async def design_test_cases_async(
                 "optimized_count": optimized_count if 'optimized_count' in dir() else 0,
                 "total_generated": result.get("data", {}).get("total_generated", 0)
             })
+        except asyncio.TimeoutError:
+            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
+            # 这里不需要额外操作
+            pass
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
         finally:
             task_db.close()
-    
+
+    # 使用 execute_with_timeout 包装后台任务
+    async def run_task_with_timeout():
+        try:
+            await task_manager.execute_with_timeout(task_id, run_task())
+        except asyncio.TimeoutError:
+            # 超时已被 execute_with_timeout 内部处理
+            pass
+        except Exception as e:
+            task_manager.fail_task(task_id, str(e))
+
     # 启动后台任务
-    asyncio_task = asyncio.create_task(run_task())
+    asyncio_task = asyncio.create_task(run_task_with_timeout())
     task_manager.register_running_task(task_id, asyncio_task)
-    
+
     return AsyncTaskResponse(
         task_id=task_id,
         status="running",
@@ -714,19 +737,33 @@ async def optimize_test_cases_batch(
                 
                 # 添加更新统计到结果
                 data["updated_count"] = updated_count
-                
+
                 task_manager.complete_task(task_id, data)
             else:
                 task_manager.fail_task(task_id, result.get("error", "未知错误"))
+        except asyncio.TimeoutError:
+            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
+            # 这里不需要额外操作
+            pass
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
         finally:
             task_db.close()
-    
+
+    # 使用 execute_with_timeout 包装后台任务
+    async def run_task_with_timeout():
+        try:
+            await task_manager.execute_with_timeout(task_id, run_task())
+        except asyncio.TimeoutError:
+            # 超时已被 execute_with_timeout 内部处理
+            pass
+        except Exception as e:
+            task_manager.fail_task(task_id, str(e))
+
     # 启动后台任务
-    asyncio_task = asyncio.create_task(run_task())
+    asyncio_task = asyncio.create_task(run_task_with_timeout())
     task_manager.register_running_task(task_id, asyncio_task)
-    
+
     concurrency = task_manager.max_concurrent_tasks
     return AsyncTaskResponse(
         task_id=task_id,

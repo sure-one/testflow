@@ -88,7 +88,7 @@
 
         <el-table-column prop="user.username" label="创建者" width="120" />
 
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -107,6 +107,16 @@
               @click="handleCancel(row)"
             >
               取消
+            </el-button>
+            <el-button
+              v-if="canRetry(row.status)"
+              link
+              type="warning"
+              size="small"
+              @click="handleRetry(row)"
+            >
+              <el-icon><RefreshRight /></el-icon>
+              重试
             </el-button>
           </template>
         </el-table-column>
@@ -136,7 +146,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Refresh, Document } from '@element-plus/icons-vue'
+import { Refresh, Document, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/date'
@@ -171,6 +181,10 @@ const hasCompletedTasks = computed(() => {
 
 const canCancel = (status: string) => {
   return ['pending', 'running'].includes(status)
+}
+
+const canRetry = (status: string) => {
+  return ['failed', 'timeout'].includes(status)
 }
 
 const handleViewLogs = (row: any) => {
@@ -239,6 +253,35 @@ const handleCleanup = async () => {
   } catch (error) {
     // 用户取消操作
   }
+}
+
+const handleRetry = async (row: any) => {
+  // 获取任务类型的中文名称
+  const taskTypeName = getTaskTypeLabel(row.task_type)
+
+  // 根据任务类型提供重试指导
+  const retryGuidance = {
+    'test_point_generation': '请回到对应的模块详情页面，重新选择需求点并点击"生成测试点"按钮。',
+    'test_case_design': '请回到对应的模块详情页面，重新选择测试点并点击"设计测试用例"按钮。',
+    'test_case_optimization': '请回到对应的模块详情页面，重新选择测试用例并点击"优化测试用例"按钮。'
+  }
+
+  ElMessageBox.alert(
+    `<div style="line-height: 1.8;">
+      <p><strong>任务类型：</strong>${taskTypeName}</p>
+      <p><strong>任务状态：</strong>${getStatusLabel(row.status)}</p>
+      ${row.error ? `<p><strong>错误信息：</strong><span style="color: #f56c6c;">${row.error}</span></p>` : ''}
+      <p style="margin-top: 16px; padding: 12px; background: #f5f7fa; border-radius: 4px;">
+        <strong>重试方式：</strong><br>${retryGuidance[row.task_type] || '请回到原操作页面重新执行任务。'}
+      </p>
+    </div>`,
+    '重试任务',
+    {
+      dangerouslyUseHTMLString: true,
+      confirmButtonText: '知道了',
+      type: 'info'
+    }
+  )
 }
 
 // 辅助函数
