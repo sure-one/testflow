@@ -243,12 +243,12 @@ const handleCancel = async (row: any) => {
 const handleCleanup = async () => {
   try {
     await ElMessageBox.confirm(
-      '确定要清理所有已完成的任务吗？此操作不可恢复。',
+      '确定要清理所有已完成、失败、取消和超时的任务吗？此操作不可恢复。',
       '清理任务',
       { type: 'warning' }
     )
 
-    await taskStore.cleanupTasks(24)
+    await taskStore.cleanupTasks()
     handleRefresh()
   } catch (error) {
     // 用户取消操作

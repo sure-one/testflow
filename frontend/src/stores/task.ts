@@ -140,11 +140,12 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  const cleanupTasks = async (maxAgeHours: number = 24) => {
+  const cleanupTasks = async () => {
     try {
-      const response = await taskApi.cleanupTasks(maxAgeHours)
+      const response = await taskApi.cleanupTasks()
       ElMessage.success(response.message)
-      await fetchTasks(undefined, true)  // 强制刷新并清除缓存
+      // 清除缓存，让调用方自行刷新
+      clearCache()
     } catch (error) {
       ElMessage.error('清理任务失败')
       console.error(error)

@@ -1029,16 +1029,18 @@ class AsyncTaskManager:
         
         return None
     
-    def cleanup_old_tasks(self, max_age_hours: int = 24):
-        """清理旧任务"""
-        now = datetime.utcnow()
+    def cleanup_completed_tasks(self):
+        """清理所有已完成的任务（内存中）"""
         to_delete = []
         for task_id, task in self._tasks.items():
-            if task.completed_at:
-                age = (now - task.completed_at).total_seconds() / 3600
-                if age > max_age_hours:
-                    to_delete.append(task_id)
-        
+            if task.status in [
+                AsyncTaskStatus.COMPLETED,
+                AsyncTaskStatus.FAILED,
+                AsyncTaskStatus.CANCELLED,
+                AsyncTaskStatus.TIMEOUT
+            ]:
+                to_delete.append(task_id)
+
         for task_id in to_delete:
             del self._tasks[task_id]
             if task_id in self._running_tasks:

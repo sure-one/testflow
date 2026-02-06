@@ -228,21 +228,15 @@ async def batch_cancel_tasks(
 
 @router.post("/cleanup", response_model=CleanupResponse)
 async def cleanup_old_tasks(
-    max_age_hours: int = Query(24, ge=1, le=720, description="任务保留时间（小时）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
-    """清理旧任务（管理员专用）
+    """清理已完成任务（管理员专用）
 
-    删除指定时间之前已完成的任务
+    删除所有已完成、失败、取消、超时的任务
     """
-    from datetime import timedelta, datetime
-
-    cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
-
-    # 删除已完成的旧任务
+    # 删除所有终态任务
     deleted_count = db.query(AsyncTask).filter(
-        AsyncTask.completed_at < cutoff_time,
         AsyncTask.status.in_([
             AsyncTaskStatus.COMPLETED,
             AsyncTaskStatus.FAILED,
@@ -253,13 +247,13 @@ async def cleanup_old_tasks(
 
     db.commit()
 
-    # 同时清理内存中的旧任务
-    task_manager.cleanup_old_tasks(max_age_hours=max_age_hours)
+    # 同时清理内存中的任务
+    task_manager.cleanup_completed_tasks()
 
     return CleanupResponse(
         success=True,
         deleted_count=deleted_count,
-        message=f"已清理 {deleted_count} 个旧任务"
+        message=f"已清理 {deleted_count} 个任务"
     )
 
 

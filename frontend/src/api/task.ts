@@ -103,10 +103,10 @@ export const taskApi = {
   },
 
   /**
-   * 清理旧任务
+   * 清理已完成任务
    */
-  cleanupTasks(maxAgeHours: number = 24): Promise<{ success: boolean; deleted_count: number; message: string }> {
-    return request.post('/tasks/cleanup', null, { params: { max_age_hours: maxAgeHours } })
+  cleanupTasks(): Promise<{ success: boolean; deleted_count: number; message: string }> {
+    return request.post('/tasks/cleanup')
   },
 
   /**
