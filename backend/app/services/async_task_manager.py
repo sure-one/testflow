@@ -1055,7 +1055,8 @@ class AsyncTaskManager:
         step_number: int,
         total_steps: int,
         message: str,
-        level: str = "info"
+        level: str = "info",
+        duration_ms: int = None
     ) -> None:
         """记录步骤日志（便捷方法）
 
@@ -1066,6 +1067,7 @@ class AsyncTaskManager:
             total_steps: 总步骤数
             message: 日志消息
             level: 日志级别
+            duration_ms: 执行时长（毫秒）
         """
         self.add_log(
             task_id,
@@ -1073,7 +1075,8 @@ class AsyncTaskManager:
             level,
             step_name=step_name,
             step_number=step_number,
-            total_steps=total_steps
+            total_steps=total_steps,
+            duration_ms=duration_ms
         )
 
     def add_batch_log(

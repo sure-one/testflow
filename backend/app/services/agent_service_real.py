@@ -1114,10 +1114,25 @@ class AgentServiceReal:
         if self.db:
             task_manager.load_config_from_db(self.db)
             self._load_config()
-        
+
+        # 步骤计时器
+        import time
+        step_start_times = {}
+
+        def start_step(step_number: int):
+            """记录步骤开始时间"""
+            step_start_times[step_number] = time.time()
+
+        def get_step_duration(step_number: int) -> int:
+            """获取步骤执行时长（毫秒）"""
+            if step_number in step_start_times:
+                return int((time.time() - step_start_times[step_number]) * 1000)
+            return 0
+
         try:
             # ========== 阶段1：生成需求点 (0-25%) ==========
             # 记录步骤开始
+            start_step(1)
             if task_id:
                 task_manager.add_step_log(
                     task_id,
@@ -1217,11 +1232,13 @@ class AgentServiceReal:
                     step_number=1,
                     total_steps=4,
                     message=f"需求拆分完成，生成 {len(requirement_points)} 个需求点",
-                    level="info"
+                    level="info",
+                    duration_ms=get_step_duration(1)
                 )
                 task_manager.update_progress(task_id, 25, f"需求点生成完成，共 {len(requirement_points)} 个")
 
             # ========== 阶段2：生成测试点 (25-50%) ==========
+            start_step(2)
             if task_id:
                 task_manager.add_step_log(
                     task_id,
@@ -1282,11 +1299,13 @@ class AgentServiceReal:
                     step_number=2,
                     total_steps=4,
                     message=f"测试点生成完成，生成 {len(test_points)} 个测试点",
-                    level="info"
+                    level="info",
+                    duration_ms=get_step_duration(2)
                 )
                 task_manager.update_progress(task_id, 50, f"测试点生成完成，共 {len(test_points)} 个")
 
             # ========== 阶段3：生成测试用例 (50-85%) ==========
+            start_step(3)
             if task_id:
                 task_manager.add_step_log(
                     task_id,
@@ -1393,11 +1412,13 @@ class AgentServiceReal:
                     step_number=3,
                     total_steps=4,
                     message=f"测试用例设计完成，生成 {len(generated_cases)} 个测试用例",
-                    level="info"
+                    level="info",
+                    duration_ms=get_step_duration(3)
                 )
                 task_manager.update_progress(task_id, 75, f"测试用例生成完成，共 {len(generated_cases)} 个")
 
             # ========== 阶段4：优化测试用例 (75-100%) ==========
+            start_step(4)
             if task_id:
                 task_manager.add_step_log(
                     task_id,
@@ -1491,7 +1512,8 @@ class AgentServiceReal:
                     step_number=4,
                     total_steps=4,
                     message=f"测试用例优化完成，优化 {optimized_count} 个测试用例",
-                    level="info"
+                    level="info",
+                    duration_ms=get_step_duration(4)
                 )
                 task_manager.update_progress(task_id, 100, "生成完成！")
                 result_data = {
