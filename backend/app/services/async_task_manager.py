@@ -73,6 +73,15 @@ class AsyncTaskManager:
     DEFAULT_TASK_TIMEOUT = 300  # 秒（与 httpx 超时保持一致）
     DEFAULT_RETRY_COUNT = 3
     DEFAULT_QUEUE_SIZE = 100
+    DEFAULT_LOG_LEVEL = "info"  # 默认日志级别
+
+    # 批量日志配置
+    _LOG_BATCH_SIZE = 10  # 批量写入大小
+    _LOG_FLUSH_INTERVAL = 2.0  # 刷新间隔（秒）
+
+    # 进度更新节流配置
+    _PROGRESS_UPDATE_THRESHOLD = 5  # 进度变化阈值（百分比）
+    _PROGRESS_UPDATE_INTERVAL = 3.0  # 时间间隔（秒）
 
     # 类级别的数据库写入锁，确保所有数据库操作串行化
     _db_write_lock = asyncio.Lock()
@@ -87,6 +96,7 @@ class AsyncTaskManager:
         self._task_timeout: int = self.DEFAULT_TASK_TIMEOUT
         self._retry_count: int = self.DEFAULT_RETRY_COUNT
         self._queue_size: int = self.DEFAULT_QUEUE_SIZE
+        self._log_level: str = self.DEFAULT_LOG_LEVEL  # 日志级别
 
         # 配置是否已加载
         self._config_loaded: bool = False
@@ -102,6 +112,15 @@ class AsyncTaskManager:
         self._db_worker_task: Optional[asyncio.Task] = None  # 后台写入任务
         self._db_worker_lock = asyncio.Lock()  # 保护工作线程启动/停止
         self._shutdown_event = asyncio.Event()  # 关闭信号
+
+        # 日志缓冲区（批量写入优化）
+        self._log_buffer: List[tuple] = []  # (task_id, log_data) 列表
+        self._log_buffer_lock = asyncio.Lock()  # 保护缓冲区
+        self._log_flush_task: Optional[asyncio.Task] = None  # 定时刷新任务
+        self._last_flush_time: float = 0  # 上次刷新时间
+
+        # 进度更新缓存（节流优化）
+        self._progress_cache: Dict[str, Dict] = {}  # {task_id: {last_progress, last_update_time, pending_message}}
     
     def load_config_from_db(self, db: "Session") -> None:
         """从数据库加载并发配置
@@ -188,8 +207,32 @@ class AsyncTaskManager:
                 self._db_worker_task = asyncio.create_task(self._db_worker())
                 print("[AsyncTaskManager] 数据库写入工作线程已启动")
 
+        # 启动日志刷新任务
+        await self._start_log_flusher()
+
+    async def _start_log_flusher(self) -> None:
+        """启动日志缓冲刷新定时任务"""
+        if self._log_flush_task and not self._log_flush_task.done():
+            return
+
+        async def flush_loop():
+            while not self._shutdown_event.is_set():
+                try:
+                    await asyncio.sleep(self._LOG_FLUSH_INTERVAL)
+                    await self._flush_log_buffer()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"[AsyncTaskManager] 日志刷新错误: {e}")
+
+        self._log_flush_task = asyncio.create_task(flush_loop())
+        print("[AsyncTaskManager] 日志刷新任务已启动")
+
     async def _stop_db_worker(self) -> None:
         """停止数据库写入工作线程"""
+        # 先停止日志刷新任务
+        await self._stop_log_flusher()
+
         async with self._db_worker_lock:
             if self._db_worker_task and not self._db_worker_task.done():
                 # 发送退出信号
@@ -201,12 +244,25 @@ class AsyncTaskManager:
                 try:
                     await asyncio.wait_for(self._db_worker_task, timeout=5.0)
                 except asyncio.TimeoutError:
+                    print("[AsyncTaskManager] 等待数据库写入工作线程退出超时")
                     self._db_worker_task.cancel()
                     try:
                         await self._db_worker_task
                     except asyncio.CancelledError:
                         pass
-                print("[AsyncTaskManager] 数据库写入工作线程已停止")
+
+    async def _stop_log_flusher(self) -> None:
+        """停止日志刷新任务"""
+        if self._log_flush_task and not self._log_flush_task.done():
+            # 先刷新缓冲区
+            await self._flush_log_buffer()
+            # 停止任务
+            self._log_flush_task.cancel()
+            try:
+                await self._log_flush_task
+            except asyncio.CancelledError:
+                pass
+            print("[AsyncTaskManager] 日志刷新任务已停止")
 
     async def _db_worker(self) -> None:
         """后台数据库写入工作线程
@@ -342,13 +398,27 @@ class AsyncTaskManager:
         except Exception as e:
             print(f"[AsyncTaskManager] 添加到同步队列失败: {e}")
 
+    def _should_log(self, level: str) -> bool:
+        """检查是否应该记录该级别的日志
+
+        Args:
+            level: 日志级别
+
+        Returns:
+            True 如果应该记录，False 否则
+        """
+        levels = {"debug": 0, "info": 1, "warning": 2, "error": 3}
+        current_level = levels.get(self._log_level.lower(), 1)
+        msg_level = levels.get(level.lower(), 1)
+        return msg_level >= current_level
+
     def add_log(self, task_id: str, message: str, level: str = "info", **kwargs) -> None:
         """添加任务日志（异步方式，通过队列，支持扩展字段）
 
         Args:
             task_id: 任务 ID
             message: 日志消息
-            level: 日志级别 (info/warning/error)
+            level: 日志级别 (debug/info/warning/error)
             **kwargs: 扩展字段，包括:
                 - step_name: 步骤名称
                 - step_number: 步骤序号
@@ -363,6 +433,10 @@ class AsyncTaskManager:
                 - total_batches: 总批次数
         """
         try:
+            # 日志级别过滤
+            if not self._should_log(level):
+                return
+
             # 确保工作线程已启动
             if self._db_worker_task is None or self._db_worker_task.done():
                 try:
@@ -372,14 +446,110 @@ class AsyncTaskManager:
                     print(f"[AsyncTaskManager] 警告: 不在异步上下文中，无法添加日志")
                     return
 
-            # 将日志请求放入队列（包含扩展字段）
+            # ERROR 和 WARNING 级别立即写入，INFO 和 DEBUG 进入缓冲区
             log_data = {"type": "log", "level": level, "message": message, **kwargs}
-            try:
-                self._db_queue.put_nowait((task_id, log_data))
-            except asyncio.QueueFull:
-                print(f"[AsyncTaskManager] 警告: 数据库写入队列已满，跳过日志记录")
+
+            if level in ("error", "warning"):
+                # 重要日志立即写入
+                try:
+                    self._db_queue.put_nowait((task_id, log_data))
+                except asyncio.QueueFull:
+                    print(f"[AsyncTaskManager] 警告: 数据库写入队列已满，跳过日志记录")
+            else:
+                # INFO 和 DEBUG 日志进入缓冲区
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._add_to_log_buffer(task_id, log_data))
+                except RuntimeError:
+                    # 不在异步上下文中，直接放入队列
+                    try:
+                        self._db_queue.put_nowait((task_id, log_data))
+                    except asyncio.QueueFull:
+                        print(f"[AsyncTaskManager] 警告: 数据库写入队列已满，跳过日志记录")
+
         except Exception as e:
             print(f"[AsyncTaskManager] 添加日志到队列失败: {e}")
+
+    async def _add_to_log_buffer(self, task_id: str, log_data: dict) -> None:
+        """添加日志到缓冲区
+
+        Args:
+            task_id: 任务 ID
+            log_data: 日志数据
+        """
+        async with self._log_buffer_lock:
+            self._log_buffer.append((task_id, log_data))
+
+            # 检查是否需要刷新
+            if len(self._log_buffer) >= self._LOG_BATCH_SIZE:
+                await self._flush_log_buffer()
+
+    async def _flush_log_buffer(self) -> None:
+        """刷新日志缓冲区到数据库
+
+        批量写入缓冲区中的所有日志
+        """
+        async with self._log_buffer_lock:
+            if not self._log_buffer:
+                return
+
+            log_batch = self._log_buffer.copy()
+            self._log_buffer.clear()
+
+        # 批量写入
+        await self._do_add_log_batch(log_batch)
+        self._last_flush_time = asyncio.get_event_loop().time()
+
+    async def _do_add_log_batch(self, log_batch: List[tuple]) -> None:
+        """批量添加日志到数据库
+
+        Args:
+            log_batch: 日志批次，格式为 [(task_id, log_data), ...]
+        """
+        from app.database import SessionLocal
+        from app.models.task import AsyncTaskLog, TaskLogLevel
+
+        if not log_batch:
+            return
+
+        async with AsyncTaskManager._db_write_lock:
+            db = SessionLocal()
+            try:
+                log_entries = []
+                for task_id, log_data in log_batch:
+                    level = log_data.get("level", "info")
+                    message = log_data.get("message", "")
+
+                    # 验证日志级别
+                    log_level = TaskLogLevel(level) if level in [e.value for e in TaskLogLevel] else TaskLogLevel.INFO
+
+                    # 创建日志条目
+                    log_entry = AsyncTaskLog(
+                        task_id=task_id,
+                        level=log_level,
+                        message=message,
+                        step_name=log_data.get("step_name"),
+                        step_number=log_data.get("step_number"),
+                        total_steps=log_data.get("total_steps"),
+                        duration_ms=log_data.get("duration_ms"),
+                        agent_name=log_data.get("agent_name"),
+                        agent_type=log_data.get("agent_type"),
+                        model_name=log_data.get("model_name"),
+                        provider=log_data.get("provider"),
+                        estimated_tokens=log_data.get("estimated_tokens"),
+                        current_batch=log_data.get("current_batch"),
+                        total_batches=log_data.get("total_batches"),
+                    )
+                    log_entries.append(log_entry)
+
+                db.add_all(log_entries)
+                db.commit()
+                print(f"[AsyncTaskManager] 批量写入 {len(log_entries)} 条日志")
+            except Exception as e:
+                print(f"[AsyncTaskManager] 批量写入日志失败: {e}")
+                db.rollback()
+            finally:
+                db.close()
 
     async def _do_add_log(self, task_id: str, log_data: dict) -> None:
         """实际执行日志添加（异步版本，支持扩展字段）
@@ -526,21 +696,77 @@ class AsyncTaskManager:
             self._sync_to_db(task_id, task)
 
     def update_progress(self, task_id: str, progress: int, message: str = None):
-        """直接设置任务进度百分比
+        """直接设置任务进度百分比（带节流优化）
 
         Args:
             task_id: 任务 ID
             progress: 进度百分比（0-100）
             message: 可选的进度消息
         """
-        task = self._tasks.get(task_id)
-        if task:
-            task.progress = min(max(progress, 0), 100)
-            if message:
-                task.message = message
+        import time
 
+        task = self._tasks.get(task_id)
+        if not task:
+            return
+
+        # 更新任务对象
+        task.progress = min(max(progress, 0), 100)
+        if message:
+            task.message = message
+
+        # 获取或创建缓存
+        cache = self._progress_cache.get(task_id, {
+            "last_progress": -1,
+            "last_update_time": 0,
+            "pending_message": None
+        })
+
+        # 计算变化
+        progress_delta = abs(task.progress - cache["last_progress"])
+        time_delta = time.time() - cache["last_update_time"]
+
+        # 判断是否需要更新数据库
+        should_update = (
+            progress == 0 or  # 任务开始
+            progress == 100 or  # 任务结束
+            cache["last_progress"] == -1 or  # 首次更新
+            progress_delta >= self._PROGRESS_UPDATE_THRESHOLD or
+            time_delta >= self._PROGRESS_UPDATE_INTERVAL
+        )
+
+        if should_update:
             # 同步到数据库
             self._sync_to_db(task_id, task)
+
+            # 更新缓存
+            cache["last_progress"] = task.progress
+            cache["last_update_time"] = time.time()
+            self._progress_cache[task_id] = cache
+        else:
+            # 只更新缓存中的 pending_message
+            if message:
+                cache["pending_message"] = message
+                self._progress_cache[task_id] = cache
+
+    def force_progress_update(self, task_id: str):
+        """强制立即更新进度到数据库
+
+        用于关键节点（任务完成/失败/超时）确保进度及时同步
+
+        Args:
+            task_id: 任务 ID
+        """
+        import time
+
+        task = self._tasks.get(task_id)
+        if task:
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
+            # 更新缓存
+            if task_id in self._progress_cache:
+                self._progress_cache[task_id]["last_progress"] = task.progress
+                self._progress_cache[task_id]["last_update_time"] = time.time()
 
     def start_task(self, task_id: str) -> bool:
         """标记任务开始
@@ -584,6 +810,13 @@ class AsyncTaskManager:
             task_id: 任务 ID
             result: 任务结果
         """
+        # 先刷新日志缓冲区，确保所有日志都被写入
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._flush_log_buffer())
+        except RuntimeError:
+            pass
+
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.COMPLETED
@@ -591,8 +824,8 @@ class AsyncTaskManager:
             task.result = result
             task.completed_at = datetime.utcnow()
 
-            # 同步到数据库
-            self._sync_to_db(task_id, task)
+            # 强制同步到数据库
+            self.force_progress_update(task_id)
 
             # 记录日志
             self.add_log(task_id, "任务执行完成", "info")
@@ -605,6 +838,10 @@ class AsyncTaskManager:
         if task_id in self._task_user_ids:
             del self._task_user_ids[task_id]
 
+        # 清理进度缓存
+        if task_id in self._progress_cache:
+            del self._progress_cache[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
 
@@ -615,14 +852,21 @@ class AsyncTaskManager:
             task_id: 任务 ID
             error: 错误信息
         """
+        # 先刷新日志缓冲区，确保所有日志都被写入
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._flush_log_buffer())
+        except RuntimeError:
+            pass
+
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.FAILED
             task.error = error
             task.completed_at = datetime.utcnow()
 
-            # 同步到数据库
-            self._sync_to_db(task_id, task)
+            # 强制同步到数据库
+            self.force_progress_update(task_id)
 
             # 记录日志
             self.add_log(task_id, f"任务执行失败: {error}", "error")
@@ -635,6 +879,10 @@ class AsyncTaskManager:
         if task_id in self._task_user_ids:
             del self._task_user_ids[task_id]
 
+        # 清理进度缓存
+        if task_id in self._progress_cache:
+            del self._progress_cache[task_id]
+
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
 
@@ -646,14 +894,21 @@ class AsyncTaskManager:
         Args:
             task_id: 任务 ID
         """
+        # 先刷新日志缓冲区，确保所有日志都被写入
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._flush_log_buffer())
+        except RuntimeError:
+            pass
+
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.TIMEOUT
             task.error = f"任务执行超时（超过{self._task_timeout}秒）"
             task.completed_at = datetime.utcnow()
 
-            # 同步到数据库
-            self._sync_to_db(task_id, task)
+            # 强制同步到数据库
+            self.force_progress_update(task_id)
 
             # 记录日志
             self.add_log(task_id, f"任务执行超时（超过{self._task_timeout}秒）", "error")
@@ -669,6 +924,10 @@ class AsyncTaskManager:
         # 清理用户 ID 缓存
         if task_id in self._task_user_ids:
             del self._task_user_ids[task_id]
+
+        # 清理进度缓存
+        if task_id in self._progress_cache:
+            del self._progress_cache[task_id]
 
         # 尝试启动等待队列中的下一个任务
         self._process_pending_queue()
@@ -821,7 +1080,7 @@ class AsyncTaskManager:
         current_batch: int,
         total_batches: int,
         message: str,
-        level: str = "info"
+        level: str = "debug"
     ) -> None:
         """记录批次日志（便捷方法）
 
@@ -830,7 +1089,7 @@ class AsyncTaskManager:
             current_batch: 当前批次号（从1开始）
             total_batches: 总批次数
             message: 日志消息
-            level: 日志级别
+            level: 日志级别（默认为 debug，可减少日志量）
         """
         self.add_log(
             task_id,

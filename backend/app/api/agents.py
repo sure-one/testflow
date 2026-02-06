@@ -275,24 +275,26 @@ async def get_task_status(
 ) -> Any:
     """获取异步任务状态"""
     from app.services.async_task_manager import task_manager
-    
-    print(f"\n{'='*60}")
-    print(f"[查询任务状态] 开始查询")
-    print(f"[查询任务状态] task_id: {task_id}")
-    print(f"[查询任务状态] task_manager 实例 ID: {id(task_manager)}")
-    print(f"[查询任务状态] 当前所有任务: {list(task_manager._tasks.keys())}")
-    print(f"[查询任务状态] 任务数量: {len(task_manager._tasks)}")
-    print(f"{'='*60}\n")
-    
+
+    # 调试日志已移除，避免前端轮询时产生大量日志输出
+    # 如需调试，可临时取消下面的注释
+    # print(f"\n{'='*60}")
+    # print(f"[查询任务状态] 开始查询")
+    # print(f"[查询任务状态] task_id: {task_id}")
+    # print(f"[查询任务状态] task_manager 实例 ID: {id(task_manager)}")
+    # print(f"[查询任务状态] 当前所有任务: {list(task_manager._tasks.keys())}")
+    # print(f"[查询任务状态] 任务数量: {len(task_manager._tasks)}")
+    # print(f"{'='*60}\n")
+
     task_status = task_manager.get_task_status(task_id)
     if not task_status:
-        print(f"[查询任务状态] ❌ 任务不存在: {task_id}")
+        # print(f"[查询任务状态] ❌ 任务不存在: {task_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"任务不存在: {task_id}"
         )
-    
-    print(f"[查询任务状态] ✅ 找到任务: {task_status}")
+
+    # print(f"[查询任务状态] ✅ 找到任务: {task_status}")
     return AsyncTaskStatusResponse(**task_status)
 
 

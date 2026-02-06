@@ -23,7 +23,11 @@ class AsyncTaskStatus(str, Enum):
 
 
 class TaskLogLevel(str, Enum):
-    """任务日志级别枚举"""
+    """任务日志级别枚举
+
+    级别顺序: DEBUG < INFO < WARNING < ERROR
+    """
+    DEBUG = "debug"
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
