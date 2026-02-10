@@ -63,35 +63,76 @@
     <div class="glass-card rounded-3xl p-6 flex-1">
       <el-tabs v-model="activeTab" class="task-tabs">
         <el-tab-pane label="全部任务" name="all">
-          <TaskList :status="null" />
+          <TaskList :status="null" @edit-result="handleEditResult" />
         </el-tab-pane>
         <el-tab-pane label="等待中" name="pending">
-          <TaskList status="pending" />
+          <TaskList status="pending" @edit-result="handleEditResult" />
         </el-tab-pane>
         <el-tab-pane label="运行中" name="running">
-          <TaskList status="running" />
+          <TaskList status="running" @edit-result="handleEditResult" />
         </el-tab-pane>
         <el-tab-pane label="已完成" name="completed">
-          <TaskList status="completed" />
+          <TaskList status="completed" @edit-result="handleEditResult" />
         </el-tab-pane>
         <el-tab-pane label="已失败" name="failed">
-          <TaskList status="failed" />
+          <TaskList status="failed" @edit-result="handleEditResult" />
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <!-- 需求点编辑对话框 -->
+    <RequirementPointsEditDialog
+      v-model:visible="showEditDialog"
+      :taskResult="currentTaskResult"
+      :projectId="currentProjectId"
+      :moduleId="currentModuleId"
+      :fileId="currentFileId"
+      @saved="handlePointsSaved"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Clock, Loading, CircleCheck, CircleClose, List } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import TaskList from '@/components/task/TaskList.vue'
+import RequirementPointsEditDialog from '@/components/task/RequirementPointsEditDialog.vue'
 import { useTaskStore } from '@/stores/task'
 
 const taskStore = useTaskStore()
 const activeTab = ref('all')
 
 const stats = computed(() => taskStore.stats)
+
+// 需求点编辑对话框状态
+const showEditDialog = ref(false)
+const currentTaskResult = ref<any>(null)
+const currentProjectId = ref<number>(0)
+const currentModuleId = ref<number>(0)
+const currentFileId = ref<number>(0)
+
+// 处理编辑结果
+const handleEditResult = async (task: any) => {
+  try {
+    // 从任务结果中获取项目、模块、文件信息
+    const params = task.request_params || {}
+    currentTaskResult.value = task.result
+    currentProjectId.value = params.project_id || 1
+    currentModuleId.value = params.module_id || 1
+    currentFileId.value = params.file_id || 1
+    showEditDialog.value = true
+  } catch (error: any) {
+    ElMessage.error('获取任务结果失败')
+  }
+}
+
+// 处理保存成功
+const handlePointsSaved = () => {
+  ElMessage.success('需求点保存成功')
+  // 刷新任务列表
+  taskStore.fetchTasks()
+}
 
 onMounted(() => {
   taskStore.fetchTasks()

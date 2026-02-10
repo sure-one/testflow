@@ -121,6 +121,13 @@ export const taskApi = {
    */
   getTaskLogs(taskId: string): Promise<TaskLogResponse> {
     return request.get(`/tasks/${taskId}/logs`)
+  },
+
+  /**
+   * 获取任务结果（用于编辑需求点等场景）
+   */
+  getTaskResult(taskId: string): Promise<{ task_id: string; result: any; completed_at: string }> {
+    return request.get(`/tasks/${taskId}/result`)
   }
 }
 

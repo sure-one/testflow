@@ -72,10 +72,17 @@ const AI_TIMEOUT = 300000
 
 export const agentApi = {
   /**
-   * 需求分析
+   * 需求分析（同步模式）
    */
   analyzeRequirements(data: RequirementAnalysisRequest): Promise<AgentTaskResponse> {
     return request.post('/agents/requirement-analysis', data, { timeout: AI_TIMEOUT })
+  },
+
+  /**
+   * 异步需求分析（支持进度跟踪和多模态分析）
+   */
+  analyzeRequirementsAsync(data: RequirementAnalysisRequest): Promise<AsyncTaskResponse> {
+    return request.post('/agents/requirement-analysis/async', data)
   },
 
   /**

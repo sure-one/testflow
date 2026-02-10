@@ -37,6 +37,8 @@ class AsyncTask:
     result: Optional[Any] = None
     error: Optional[str] = None
     message: Optional[str] = None  # 进度消息
+    request_params: Optional[Dict[str, Any]] = None  # 原始请求参数，用于重试
+    user_id: Optional[int] = None  # 用户 ID
     created_at: datetime = field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -198,6 +200,25 @@ class AsyncTaskManager:
             user_id: 用户 ID
         """
         self._task_user_ids[task_id] = user_id
+        # 同时设置到任务对象中
+        task = self.get_task(task_id)
+        if task:
+            task.user_id = user_id
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
+
+    def set_task_request_params(self, task_id: str, params: dict) -> None:
+        """保存任务请求参数（用于重试）
+
+        Args:
+            task_id: 任务 ID
+            params: 请求参数字典
+        """
+        task = self.get_task(task_id)
+        if task:
+            task.request_params = params
+            # 同步到数据库
+            self._sync_to_db(task_id, task)
 
     async def _start_db_worker(self) -> None:
         """启动数据库写入工作线程（如果未启动）"""
@@ -336,9 +357,11 @@ class AsyncTaskManager:
                     db_task.error = task.error
                     db_task.started_at = task.started_at
                     db_task.completed_at = task.completed_at
+                    db_task.request_params = task.request_params
                 else:
                     # 创建新记录
-                    user_id = self._task_user_ids.get(task_id)
+                    # 优先从任务对象获取 user_id，如果没有则从字典获取
+                    user_id = task.user_id or self._task_user_ids.get(task_id)
                     if not user_id:
                         print(f"[AsyncTaskManager] 警告: 任务 {task_id} 没有 user_id，跳过数据库写入")
                         return
@@ -354,6 +377,7 @@ class AsyncTaskManager:
                         result=task.result,
                         error=task.error,
                         user_id=user_id,
+                        request_params=task.request_params,
                         created_at=task.created_at,
                         started_at=task.started_at,
                         completed_at=task.completed_at
@@ -384,7 +408,9 @@ class AsyncTaskManager:
                 # 注意：这需要在异步上下文中调用
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(self._start_db_worker())
+                    worker_task = loop.create_task(self._start_db_worker())
+                    # 添加回调以确保工作线程已启动
+                    worker_task.add_done_callback(lambda t: print(f"[AsyncTaskManager] 工作线程启动完成"))
                 except RuntimeError:
                     # 不在异步上下文中，跳过同步
                     print(f"[AsyncTaskManager] 警告: 不在异步上下文中，无法启动数据库工作线程")
@@ -645,7 +671,7 @@ class AsyncTaskManager:
         # 检查队列是否已满
         if self.is_queue_full():
             raise ValueError(f"任务队列已满（最大{self._queue_size}个），请稍后重试")
-        
+
         task_id = str(uuid.uuid4())
         task = AsyncTask(
             task_id=task_id,
@@ -653,13 +679,15 @@ class AsyncTaskManager:
             total_batches=total_batches
         )
         self._tasks[task_id] = task
-        
+
+        print(f"[AsyncTaskManager] ✓ 创建任务: {task_id[:8]}... | 类型: {task_type} | 总批次: {total_batches}")
+
         # 如果达到并发限制，加入等待队列
         if not self.can_start_new_task():
             self._pending_queue.append(task_id)
-            print(f"[AsyncTaskManager] 任务 {task_id} 已加入等待队列 "
+            print(f"[AsyncTaskManager] ⏳ 任务 {task_id[:8]}... 已加入等待队列 "
                   f"(当前运行: {self.get_running_task_count()}/{self._max_concurrent_tasks})")
-        
+
         return task_id
     
     def get_task(self, task_id: str) -> Optional[AsyncTask]:
@@ -691,6 +719,10 @@ class AsyncTaskManager:
                 # 进度范围：5% ~ 95%（留5%给启动，5%给保存）
                 raw_progress = (completed_batches / task.total_batches) * 90
                 task.progress = int(5 + raw_progress)
+
+            # 打印批次进度
+            if task.total_batches > 1:
+                print(f"[AsyncTaskManager] 📊 任务 {task_id[:8]}... 批次进度: {completed_batches}/{task.total_batches} ({task.progress}%)")
 
             # 同步到数据库
             self._sync_to_db(task_id, task)
@@ -737,6 +769,12 @@ class AsyncTaskManager:
         if should_update:
             # 同步到数据库
             self._sync_to_db(task_id, task)
+
+            # 在关键节点打印日志
+            if task.progress == 50:
+                print(f"[AsyncTaskManager] 🔄 任务 {task_id[:8]}... 进度 50%{f' | {message}' if message else ''}")
+            elif task.progress == 100:
+                print(f"[AsyncTaskManager) ✔ 任务 {task_id[:8]}... 进度 100%{f' | {message}' if message else ''}")
 
             # 更新缓存
             cache["last_progress"] = task.progress
@@ -790,6 +828,7 @@ class AsyncTaskManager:
         # 从等待队列中移除
         if task_id in self._pending_queue:
             self._pending_queue.remove(task_id)
+            print(f"[AsyncTaskManager] 🚀 任务 {task_id[:8]}... 从等待队列中取出并启动")
 
         task.status = AsyncTaskStatus.RUNNING
         task.started_at = datetime.utcnow()
@@ -800,6 +839,8 @@ class AsyncTaskManager:
 
         # 记录日志
         self.add_log(task_id, "任务开始执行", "info")
+
+        print(f"[AsyncTaskManager] ▶ 任务 {task_id[:8]}... 开始执行 | 类型: {task.task_type}")
 
         return True
 
@@ -829,6 +870,14 @@ class AsyncTaskManager:
 
             # 记录日志
             self.add_log(task_id, "任务执行完成", "info")
+
+            # 计算执行时长
+            if task.started_at:
+                duration = (task.completed_at - task.started_at).total_seconds()
+                print(f"[AsyncTaskManager] ✅ 任务 {task_id[:8]}... 执行完成 | "
+                      f"类型: {task.task_type} | 耗时: {duration:.2f}秒")
+            else:
+                print(f"[AsyncTaskManager] ✅ 任务 {task_id[:8]}... 执行完成 | 类型: {task.task_type}")
 
         # 清理运行中的任务
         if task_id in self._running_tasks:
@@ -870,6 +919,15 @@ class AsyncTaskManager:
 
             # 记录日志
             self.add_log(task_id, f"任务执行失败: {error}", "error")
+
+            # 计算执行时长
+            if task.started_at:
+                duration = (task.completed_at - task.started_at).total_seconds()
+                print(f"[AsyncTaskManager] ❌ 任务 {task_id[:8]}... 执行失败 | "
+                      f"类型: {task.task_type} | 耗时: {duration:.2f}秒 | 错误: {error}")
+            else:
+                print(f"[AsyncTaskManager] ❌ 任务 {task_id[:8]}... 执行失败 | "
+                      f"类型: {task.task_type} | 错误: {error}")
 
         # 清理运行中的任务
         if task_id in self._running_tasks:
@@ -996,7 +1054,7 @@ class AsyncTaskManager:
     
     def _process_pending_queue(self):
         """处理等待队列中的任务
-        
+
         当有任务完成时调用，尝试启动等待队列中的下一个任务
         """
         while self._pending_queue and self.can_start_new_task():
@@ -1005,7 +1063,8 @@ class AsyncTaskManager:
             if task and task.status == AsyncTaskStatus.PENDING:
                 # 任务仍在等待，可以启动
                 self._pending_queue.pop(0)
-                print(f"[AsyncTaskManager] 从队列启动任务 {next_task_id}")
+                print(f"[AsyncTaskManager] ⏭️  从等待队列启动任务 {next_task_id[:8]}... | "
+                      f"剩余队列: {len(self._pending_queue)}")
                 # 注意：实际启动需要外部调用者处理
                 break
             else:
@@ -1159,6 +1218,10 @@ class AsyncTaskManager:
             level: 日志级别
             estimated_tokens: 估算的 Token 数量
         """
+        # 打印智能体调用日志
+        print(f"[AsyncTaskManager] 🤖 任务 {task_id[:8]}... | "
+              f"{agent_name}({agent_type}) | {model_name}@{provider} | {message}")
+
         self.add_log(
             task_id,
             message,

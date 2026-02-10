@@ -145,6 +145,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { Loading, CircleCheck, CircleClose, MagicStick, InfoFilled, Picture, Warning } from '@element-plus/icons-vue'
+import { ElNotification } from 'element-plus'
 import { agentApi } from '@/api/agent'
 
 interface RequirementImage {
@@ -193,6 +194,7 @@ const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void
   (e: 'close'): void
   (e: 'success', points: GeneratedPoint[]): void
+  (e: 'async-task-created', taskId: string): void  // 新增：异步任务创建事件
 }>()
 
 const dialogVisible = computed({
@@ -242,95 +244,47 @@ const startGeneration = async () => {
   generating.value = true
   success.value = false
   error.value = null
-  progress.value = 10
-  multimodalUsed.value = false
-  modelSupportsMultimodal.value = true
-  
-  // 根据是否有图片设置不同的初始提示
-  if (hasImages.value) {
-    currentStep.value = `正在准备分析文档和${imageCount.value}张图片...`
-  } else {
-    currentStep.value = '正在调用AI智能体...'
-  }
 
   try {
-    // 多模态分析需要更长时间，调整进度更新间隔
-    const progressUpdateInterval = hasImages.value ? 1200 : 800
-    
-    // 模拟进度更新
-    const progressInterval = setInterval(() => {
-      if (progress.value < 90) {
-        // 多模态分析进度更新更慢
-        const increment = hasImages.value ? Math.random() * 10 : Math.random() * 15
-        progress.value += increment
-        
-        if (hasImages.value) {
-          // 多模态分析的步骤提示
-          if (progress.value > 20 && progress.value < 40) {
-            currentStep.value = '正在分析文档文本内容...'
-          } else if (progress.value >= 40 && progress.value < 60) {
-            currentStep.value = `正在分析${imageCount.value}张图片内容...`
-          } else if (progress.value >= 60 && progress.value < 80) {
-            currentStep.value = '正在整合文本和图片信息...'
-          } else if (progress.value >= 80) {
-            currentStep.value = '正在提取需求点...'
-          }
-        } else {
-          // 纯文本分析的步骤提示
-          if (progress.value > 30 && progress.value < 60) {
-            currentStep.value = '正在分析文档结构...'
-          } else if (progress.value >= 60) {
-            currentStep.value = '正在提取需求点...'
-          }
-        }
-      }
-    }, progressUpdateInterval)
-
     // 构建请求参数
     const requestParams: any = {
       requirement_content: props.documentContent,
-      project_context: `项目ID: ${props.projectId}, 模块ID: ${props.moduleId}`
+      project_context: `项目ID: ${props.projectId}, 模块ID: ${props.moduleId}`,
+      // 添加上下文信息用于后续保存
+      project_id: props.projectId,
+      module_id: props.moduleId,
+      file_id: props.document?.id
     }
-    
+
     // 如果有图片，添加图片路径
     if (hasImages.value && imagePaths.value.length > 0) {
       requestParams.image_paths = imagePaths.value
     }
 
-    // 调用需求分析API
-    const response = await agentApi.analyzeRequirements(requestParams)
+    console.log('[GeneratePointsDialog] 准备调用异步 API，参数:', requestParams)
 
-    clearInterval(progressInterval)
+    // 调用异步 API
+    const response = await agentApi.analyzeRequirementsAsync(requestParams)
 
-    if (response.success && response.data?.requirement_points) {
-      progress.value = 100
-      currentStep.value = '生成完成！'
-      
-      // 记录多模态分析信息
-      multimodalUsed.value = response.data.multimodal_used || false
-      modelSupportsMultimodal.value = response.data.model_supports_multimodal !== false
-      
-      // 转换为标准格式
-      generatedPoints.value = response.data.requirement_points.map((point: any, index: number) => ({
-        content: point.content || point.description || '',
-        order_index: point.order_index ?? index,
-        priority: point.priority || 'medium',
-        category: point.category || 'functional',
-        created_by_ai: true
-      }))
+    console.log('[GeneratePointsDialog] API 响应:', response)
 
-      // 短暂延迟后显示成功状态
-      setTimeout(() => {
-        generating.value = false
-        success.value = true
-      }, 500)
-    } else {
-      throw new Error(response.error || '智能体返回结果为空')
-    }
+    // 发射异步任务创建事件
+    emit('async-task-created', response.task_id)
+
+    ElNotification({
+      title: '异步任务已创建',
+      message: '您可以在"任务管理"中查看任务进度和结果',
+      type: 'info',
+      duration: 5000
+    })
+
+    // 关闭对话框
+    resetState()
+    emit('update:visible', false)
   } catch (err: any) {
-    console.error('生成需求点失败:', err)
+    console.error('创建异步任务失败:', err)
     generating.value = false
-    error.value = err.response?.data?.detail || err.message || '生成失败，请重试'
+    error.value = err.response?.data?.detail || '创建任务失败'
   }
 }
 

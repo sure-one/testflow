@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.database import get_db
 from app.core.dependencies import get_current_admin_user
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.task import AsyncTask, AsyncTaskStatus, AsyncTaskLog
 from app.services.async_task_manager import task_manager
 
@@ -305,3 +305,37 @@ async def get_task_logs(
         logs=[log.to_dict() for log in logs],
         total=len(logs)
     )
+
+
+@router.get("/{task_id}/result")
+async def get_task_result(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """获取任务结果（用于编辑需求点）"""
+    task = db.query(AsyncTask).filter(AsyncTask.task_id == task_id).first()
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务不存在: {task_id}"
+        )
+
+    # 权限检查：只能查看自己的任务
+    if task.user_id != current_user.id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权访问此任务结果"
+        )
+
+    if task.status != AsyncTaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"任务未完成，当前状态: {task.status.value}"
+        )
+
+    return {
+        "task_id": task.task_id,
+        "result": task.result,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None
+    }

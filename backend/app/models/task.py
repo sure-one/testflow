@@ -142,6 +142,9 @@ class AsyncTask(Base):
     result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # 原始请求参数（用于重试）
+    request_params: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True, comment="原始请求参数，用于重试")
+
     # 用户关联
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     creator: Mapped["User"] = relationship("User")

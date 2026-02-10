@@ -10,6 +10,7 @@
           @change="handleFilterChange"
           style="width: 180px"
         >
+          <el-option label="需求点生成" value="requirement_analysis" />
           <el-option label="测试点生成" value="test_point_generation" />
           <el-option label="测试用例设计" value="test_case_design" />
           <el-option label="测试用例优化" value="test_case_optimization" />
@@ -88,7 +89,7 @@
 
         <el-table-column prop="user.username" label="创建者" width="120" />
 
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -98,6 +99,16 @@
             >
               <el-icon><Document /></el-icon>
               日志
+            </el-button>
+            <el-button
+              v-if="canEditResult(row)"
+              link
+              type="success"
+              size="small"
+              @click="handleEditResult(row)"
+            >
+              <el-icon><Edit /></el-icon>
+              编辑结果
             </el-button>
             <el-button
               v-if="canCancel(row.status)"
@@ -146,7 +157,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
-import { Refresh, Document, RefreshRight } from '@element-plus/icons-vue'
+import { Refresh, Document, RefreshRight, Edit } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/date'
@@ -187,9 +198,26 @@ const canRetry = (status: string) => {
   return ['failed', 'timeout'].includes(status)
 }
 
+// 添加编辑结果判断
+const canEditResult = (row: any) => {
+  return row.status === 'completed' &&
+         row.task_type === 'requirement_analysis' &&
+         row.result?.requirement_points
+}
+
+// 发射事件给父组件
+const emit = defineEmits<{
+  (e: 'edit-result', task: any): void
+}>()
+
 const handleViewLogs = (row: any) => {
   currentLogTaskId.value = row.task_id
   logDialogVisible.value = true
+}
+
+// 编辑结果处理
+const handleEditResult = (row: any) => {
+  emit('edit-result', row)
 }
 
 const handleFilterChange = () => {
@@ -287,6 +315,7 @@ const handleRetry = async (row: any) => {
 // 辅助函数
 const getTaskTypeLabel = (type: string) => {
   const labels: Record<string, string> = {
+    requirement_analysis: '需求点生成',
     test_point_generation: '测试点生成',
     test_case_design: '测试用例设计',
     test_case_optimization: '测试用例优化'
@@ -296,6 +325,7 @@ const getTaskTypeLabel = (type: string) => {
 
 const getTaskTypeColor = (type: string) => {
   const colors: Record<string, string> = {
+    requirement_analysis: '',
     test_point_generation: 'primary',
     test_case_design: 'success',
     test_case_optimization: 'warning'

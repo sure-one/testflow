@@ -24,6 +24,10 @@ class RequirementAnalysisRequest(BaseModel):
     project_context: str = Field(default="", description="项目背景信息")
     agent_id: Optional[int] = Field(default=None, description="指定智能体ID")
     image_paths: Optional[List[str]] = Field(default=None, description="图片文件路径列表（用于多模态分析）")
+    # 以下字段用于保存上下文信息，便于后续编辑时保存到正确的位置
+    project_id: Optional[int] = Field(default=None, description="项目ID")
+    module_id: Optional[int] = Field(default=None, description="模块ID")
+    file_id: Optional[int] = Field(default=None, description="需求文件ID")
 
 
 class TestPointGenerationRequest(BaseModel):
@@ -72,6 +76,26 @@ class TaskLogResponse(BaseModel):
     total: int
 
 
+class AsyncTaskResponse(BaseModel):
+    """异步任务响应"""
+    task_id: str
+    status: str
+    message: str
+
+
+class AsyncTaskStatusResponse(BaseModel):
+    """异步任务状态响应"""
+    task_id: str
+    task_type: str
+    status: str
+    progress: int
+    total_batches: int
+    completed_batches: int
+    result: Optional[dict] = None
+    error: Optional[str] = None
+    message: Optional[str] = None  # 进度消息
+
+
 # API路由
 @router.post("/requirement-analysis", response_model=AgentTaskResponse)
 async def analyze_requirements(
@@ -117,7 +141,7 @@ async def analyze_requirements(
             error=result.get("error"),
             task_id=result.get("task_log_id")
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -125,24 +149,132 @@ async def analyze_requirements(
         )
 
 
-class AsyncTaskResponse(BaseModel):
-    """异步任务响应"""
-    task_id: str
-    status: str
-    message: str
+@router.post("/requirement-analysis/async", response_model=AsyncTaskResponse)
+async def analyze_requirements_async(
+    request: RequirementAnalysisRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: UserSchema = Depends(get_current_active_user)
+) -> Any:
+    """异步分析需求文档（支持进度跟踪和多模态分析）
 
+    流程：
+    1. 创建异步任务
+    2. 后台调用 AI 分析文档
+    3. 将结果存储到任务 result 字段
+    4. 前端通过轮询获取进度和结果
+    5. 用户可在任务结果中编辑后再决定是否保存
+    """
+    import asyncio
+    from datetime import datetime
+    from app.models.ai_config import Agent, AgentType
+    from app.services.async_task_manager import task_manager
 
-class AsyncTaskStatusResponse(BaseModel):
-    """异步任务状态响应"""
-    task_id: str
-    task_type: str
-    status: str
-    progress: int
-    total_batches: int
-    completed_batches: int
-    result: Optional[dict] = None
-    error: Optional[str] = None
-    message: Optional[str] = None  # 进度消息
+    # 从系统设置加载并发配置
+    task_manager.load_config_from_db(db)
+
+    # 需求分析是单步骤任务
+    task_id = task_manager.create_task("requirement_analysis", total_batches=1)
+
+    task_manager.set_task_user_id(task_id, current_user.id)
+
+    # 保存原始请求参数用于重试
+    task_manager.set_task_request_params(task_id, request.model_dump())
+
+    task_manager.start_task(task_id)
+
+    # 获取 agent_id
+    agent_id = request.agent_id
+    if not agent_id:
+        agent = db.query(Agent).filter(
+            Agent.type == AgentType.REQUIREMENT_SPLITTER,
+            Agent.is_active == True
+        ).first()
+        if agent:
+            agent_id = agent.id
+
+    # 保存请求参数供后台任务使用
+    requirement_content = request.requirement_content
+    project_context = request.project_context
+    image_paths = request.image_paths or []
+    user_id = current_user.id
+
+    # 后台执行任务
+    async def run_task():
+        from app.database import SessionLocal
+        from app.models.ai_config import AIModel
+        from app.services.agent_service_real import AgentServiceReal
+        task_db = SessionLocal()
+
+        try:
+            service = AgentServiceReal(db=task_db)
+
+            # 更新进度
+            task_manager.update_progress(task_id, 10, "正在分析需求文档...")
+
+            # 记录智能体信息到日志
+            agent = task_db.query(Agent).filter(Agent.id == agent_id).first()
+            if agent:
+                ai_model = task_db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first()
+                if ai_model:
+                    task_manager.add_agent_log(
+                        task_id,
+                        agent_name=agent.name,
+                        agent_type="REQUIREMENT_SPLITTER",
+                        model_name=ai_model.model_id,
+                        provider=ai_model.provider or "openai",
+                        message=f"开始分析需求文档（支持多模态）",
+                        level="info"
+                    )
+
+            # 执行需求分析
+            result = await service.execute_requirement_analysis(
+                requirement_content=requirement_content,
+                project_context=project_context,
+                user_id=user_id,
+                agent_id=agent_id,
+                image_paths=image_paths
+            )
+
+            if result.get("success"):
+                # 添加元数据便于前端编辑
+                result_data = result.get("data", {})
+                result_data["metadata"] = {
+                    "source_document_length": len(requirement_content),
+                    "has_images": len(image_paths) > 0,
+                    "image_count": len(image_paths),
+                    "generated_at": datetime.now().isoformat()
+                }
+
+                task_manager.complete_task(task_id, result_data)
+            else:
+                task_manager.fail_task(task_id, result.get("error", "需求分析失败"))
+
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            task_manager.fail_task(task_id, str(e))
+        finally:
+            task_db.close()
+
+    # 使用 execute_with_timeout 包装后台任务
+    async def run_task_with_timeout():
+        try:
+            await task_manager.execute_with_timeout(task_id, run_task())
+        except asyncio.TimeoutError:
+            pass
+        except Exception as e:
+            task_manager.fail_task(task_id, str(e))
+
+    # 启动后台任务
+    asyncio_task = asyncio.create_task(run_task_with_timeout())
+    task_manager.register_running_task(task_id, asyncio_task)
+
+    return AsyncTaskResponse(
+        task_id=task_id,
+        status="running",
+        message=f"需求分析任务已启动（包含 {len(image_paths)} 张图片）" if image_paths else "需求分析任务已启动"
+    )
 
 
 @router.post("/test-point-generation", response_model=AgentTaskResponse)

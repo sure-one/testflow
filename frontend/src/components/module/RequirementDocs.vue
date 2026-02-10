@@ -122,6 +122,7 @@
       :module-id="moduleId"
       @close="handleGenerateClose"
       @success="handleGenerateSuccess"
+      @async-task-created="handleAsyncTaskCreated"
     />
 
     <!-- 一键生成进度对话框 -->
@@ -381,6 +382,12 @@ const handleGenerateSuccess = (points: any[]) => {
   generatedPoints.value = points
   showGenerateDialog.value = false
   showPreviewDialog.value = true
+}
+
+// 处理异步任务创建
+const handleAsyncTaskCreated = (taskId: string) => {
+  console.log('异步任务已创建:', taskId)
+  // 任务已在 GeneratePointsDialog 中处理通知
 }
 
 // 关闭预览对话框
