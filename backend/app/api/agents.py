@@ -251,7 +251,10 @@ async def analyze_requirements_async(
                 task_manager.fail_task(task_id, result.get("error", "需求分析失败"))
 
         except asyncio.TimeoutError:
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
         finally:
@@ -262,7 +265,10 @@ async def analyze_requirements_async(
         try:
             await task_manager.execute_with_timeout(task_id, run_task())
         except asyncio.TimeoutError:
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
 
@@ -331,27 +337,34 @@ async def generate_test_points_async(
     current_user: UserSchema = Depends(get_current_active_user)
 ) -> Any:
     """异步生成测试点（适用于大量需求点，支持进度轮询）
-    
+
     测试分类、设计方法和并发配置由后端从系统设置自动加载
+
+    流程：
+    1. 创建异步任务
+    2. 后台批量调用AI生成测试点
+    3. 生成完成后自动保存到数据库
+    4. 前端通过轮询获取进度和结果
     """
     import asyncio
     from app.models.ai_config import Agent, AgentType
+    from app.models.testcase import TestPoint
     from app.services.agent_service_real import AgentServiceReal
     from app.services.async_task_manager import task_manager
-    
+
     # 从系统设置加载并发配置
     task_manager.load_config_from_db(db)
-    
+
     # 计算批次数（基于系统设置的并发数）
     concurrency = task_manager.max_concurrent_tasks
     batch_size = max(2, concurrency * 2)
     total_batches = (len(request.requirement_points) + batch_size - 1) // batch_size
-    
+
     # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_point_generation", total_batches)
     task_manager.set_task_user_id(task_id, current_user.id)
     task_manager.start_task(task_id)
-    
+
     # 获取agent_id
     agent_id = request.agent_id
     if not agent_id:
@@ -361,38 +374,99 @@ async def generate_test_points_async(
         ).first()
         if agent:
             agent_id = agent.id
-    
+
+    # 保存请求参数供后台任务使用
+    requirement_points = request.requirement_points
+    user_id = current_user.id
+
     # 后台执行任务
     async def run_task():
+        from app.database import SessionLocal
+        task_db = SessionLocal()
+        total_saved = 0
+
         try:
-            service = AgentServiceReal(db=db)
+            service = AgentServiceReal(db=task_db)
 
             # 使用 execute_with_timeout 包装任务执行
             result = await task_manager.execute_with_timeout(
                 task_id,
                 service.execute_test_point_generation(
-                    requirement_points=request.requirement_points,
-                    user_id=current_user.id,
+                    requirement_points=requirement_points,
+                    user_id=user_id,
                     agent_id=agent_id,
                     task_id=task_id
                 )
             )
 
-            if result["success"]:
-                task_manager.complete_task(task_id, result.get("data"))
-            else:
+            if not result["success"]:
                 task_manager.fail_task(task_id, result.get("error", "未知错误"))
+                return
+
+            # 获取生成的测试点数据
+            test_points_data = result.get("data", {}).get("test_points", [])
+
+            if test_points_data:
+                # 批量保存测试点到数据库
+                saved_count = 0
+                for tp_data in test_points_data:
+                    try:
+                        # 获取关联的需求点以获取 module_id
+                        from app.models.requirement import RequirementPoint
+                        req_point = task_db.query(RequirementPoint).filter(
+                            RequirementPoint.id == tp_data.get("requirement_point_id")
+                        ).first()
+
+                        module_id = req_point.module_id if req_point else None
+
+                        test_point = TestPoint(
+                            module_id=module_id,
+                            requirement_point_id=tp_data.get("requirement_point_id"),
+                            content=tp_data.get("content", ""),
+                            test_type=tp_data.get("test_type", "functional"),
+                            design_method=tp_data.get("design_method"),
+                            priority=tp_data.get("priority", "medium"),
+                            created_by_ai=True,
+                            edited_by_user=False,
+                            created_by=user_id
+                        )
+                        task_db.add(test_point)
+                        saved_count += 1
+                    except Exception as e:
+                        print(f"⚠️ 创建测试点对象失败: {e}")
+                        continue
+
+                try:
+                    task_db.commit()
+                    total_saved = saved_count
+                    print(f"✅ 成功保存 {total_saved} 个测试点到数据库")
+                except Exception as e:
+                    print(f"⚠️ 批次提交失败: {e}")
+                    task_db.rollback()
+                    task_manager.fail_task(task_id, f"保存测试点失败: {str(e)}")
+                    return
+
+            # 标记任务完成
+            task_manager.complete_task(task_id, {
+                "test_points": test_points_data,
+                "total_saved": total_saved
+            })
+
         except asyncio.TimeoutError:
-            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
-            # 这里不需要额外操作
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
+            print(f"❌ 测试点生成任务异常: {e}")
             task_manager.fail_task(task_id, str(e))
-    
+        finally:
+            task_db.close()
+
     # 启动后台任务
     asyncio_task = asyncio.create_task(run_task())
     task_manager.register_running_task(task_id, asyncio_task)
-    
+
     return AsyncTaskResponse(
         task_id=task_id,
         status="running",
@@ -655,19 +729,20 @@ async def design_test_cases_async(
                                         optimized_count += 1
                                 except Exception as e:
                                     print(f"⚠️ 更新优化结果失败: {e}")
-                    
+
                     task_db.commit()
                     print(f"✅ 成功优化 {optimized_count} 个测试用例")
-            
+
             task_manager.complete_task(task_id, {
                 "saved_count": total_saved,
                 "optimized_count": optimized_count if 'optimized_count' in dir() else 0,
                 "total_generated": result.get("data", {}).get("total_generated", 0)
             })
         except asyncio.TimeoutError:
-            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
-            # 这里不需要额外操作
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
         finally:
@@ -678,8 +753,10 @@ async def design_test_cases_async(
         try:
             await task_manager.execute_with_timeout(task_id, run_task())
         except asyncio.TimeoutError:
-            # 超时已被 execute_with_timeout 内部处理
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
 
@@ -868,7 +945,7 @@ async def optimize_test_cases_batch(
                                     continue
                     
                     task_db.commit()
-                
+
                 # 添加更新统计到结果
                 data["updated_count"] = updated_count
 
@@ -876,9 +953,10 @@ async def optimize_test_cases_batch(
             else:
                 task_manager.fail_task(task_id, result.get("error", "未知错误"))
         except asyncio.TimeoutError:
-            # 超时已被 execute_with_timeout 内部处理（调用 timeout_task）
-            # 这里不需要额外操作
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
         finally:
@@ -889,8 +967,10 @@ async def optimize_test_cases_batch(
         try:
             await task_manager.execute_with_timeout(task_id, run_task())
         except asyncio.TimeoutError:
-            # 超时已被 execute_with_timeout 内部处理
-            pass
+            # 注意：execute_with_timeout 已不再抛出 TimeoutError（移除了 asyncio.wait_for）
+            # 这个捕获块保留以防其他地方有超时逻辑
+            print(f"[WARNING] asyncio.TimeoutError 意外触发: {task_id}")
+            task_manager.fail_task(task_id, "任务超时")
         except Exception as e:
             task_manager.fail_task(task_id, str(e))
 
