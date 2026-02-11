@@ -299,7 +299,7 @@ async def get_task_logs(
     # 获取日志
     logs = db.query(AsyncTaskLog).filter(
         AsyncTaskLog.task_id == task_id
-    ).order_by(AsyncTaskLog.timestamp.desc()).all()
+    ).order_by(AsyncTaskLog.id.desc()).all()
 
     return TaskLogResponse(
         logs=[log.to_dict() for log in logs],

@@ -154,7 +154,7 @@ class AsyncTask(Base):
         "AsyncTaskLog",
         back_populates="task",
         cascade="all, delete-orphan",
-        order_by="AsyncTaskLog.timestamp.desc()"
+        order_by="AsyncTaskLog.id.desc()"
     )
 
     # 时间戳
