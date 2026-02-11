@@ -36,6 +36,7 @@ export interface TaskItem {
   started_at: string | null
   completed_at: string | null
   request_params?: any
+  task_name?: string  // 新增：任务名称（格式：项目名-模块名-需求文档名）
   user?: {
     id: number
     username: string

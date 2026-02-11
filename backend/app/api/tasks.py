@@ -12,10 +12,51 @@ from app.database import get_db
 from app.core.dependencies import get_current_admin_user
 from app.models.user import User, UserRole
 from app.models.task import AsyncTask, AsyncTaskStatus, AsyncTaskLog
+from app.models.project import Project
+from app.models.module import Module
+from app.models.requirement import RequirementFile
 from app.services.async_task_manager import task_manager
 
 
 router = APIRouter()
+
+
+# ============ 辅助函数 ============
+
+def _generate_task_name(task: AsyncTask, db: Session) -> Optional[str]:
+    """生成任务名称
+
+    格式: 项目名-模块名-需求文档名
+    如果无法获取完整信息，返回 None 或部分名称
+    """
+    if not task.request_params:
+        return None
+
+    params = task.request_params
+    parts = []
+
+    # 获取项目名
+    if params.get("project_id"):
+        project = db.query(Project).filter(Project.id == params["project_id"]).first()
+        if project:
+            parts.append(project.name)
+
+    # 获取模块名
+    if params.get("module_id"):
+        module = db.query(Module).filter(Module.id == params["module_id"]).first()
+        if module:
+            parts.append(module.name)
+
+    # 获取文件名（移除扩展名）
+    if params.get("file_id"):
+        file = db.query(RequirementFile).filter(
+            RequirementFile.id == params["file_id"]
+        ).first()
+        if file:
+            filename = file.filename.rsplit('.', 1)[0] if '.' in file.filename else file.filename
+            parts.append(filename)
+
+    return "-".join(parts) if parts else None
 
 
 # ============ 请求/响应模型 ============
@@ -109,8 +150,15 @@ async def get_tasks(
     offset = (page - 1) * page_size
     tasks = query.offset(offset).limit(page_size).all()
 
+    # 为每个任务添加 task_name
+    result_tasks = []
+    for task in tasks:
+        task_dict = task.to_dict_with_user()
+        task_dict["task_name"] = _generate_task_name(task, db)
+        result_tasks.append(task_dict)
+
     return TaskListResponse(
-        tasks=[task.to_dict_with_user() for task in tasks],
+        tasks=result_tasks,
         total=total,
         page=page,
         page_size=page_size
@@ -131,8 +179,11 @@ async def get_task_detail(
             detail=f"任务不存在: {task_id}"
         )
 
+    task_dict = task.to_dict_with_user()
+    task_dict["task_name"] = _generate_task_name(task, db)
+
     return TaskDetailResponse(
-        task=task.to_dict_with_user(),
+        task=task_dict,
         messages=[]  # 预留：未来可以添加任务日志
     )
 

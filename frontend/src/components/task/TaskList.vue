@@ -44,13 +44,15 @@
         height="100%"
         class="task-table"
       >
-        <el-table-column prop="task_id" label="任务 ID" width="200">
+        <el-table-column prop="task_name" label="任务名称" min-width="280" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-text class="font-mono text-xs">{{ row.task_id.slice(0, 8) }}...</el-text>
+            <el-link type="primary" @click="handleViewDetail(row)">
+              {{ row.task_name || row.task_id.slice(0, 8) }}
+            </el-link>
           </template>
         </el-table-column>
 
-        <el-table-column prop="task_type" label="类型" width="180">
+        <el-table-column prop="task_type" label="类型" width="140">
           <template #default="{ row }">
             <el-tag :type="getTaskTypeColor(row.task_type)">
               {{ getTaskTypeLabel(row.task_type) }}
@@ -58,7 +60,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="status" label="状态" width="120">
+        <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="getStatusColor(row.status)">
               {{ getStatusLabel(row.status) }}
@@ -66,7 +68,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="进度" width="200">
+        <el-table-column label="进度" width="180">
           <template #default="{ row }">
             <div class="flex items-center gap-2">
               <el-progress
@@ -79,17 +81,17 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="message" label="消息" min-width="250" show-overflow-tooltip />
+        <el-table-column prop="message" label="消息" min-width="200" show-overflow-tooltip />
 
-        <el-table-column prop="created_at" label="创建时间" width="160">
+        <el-table-column prop="created_at" label="创建时间" width="150">
           <template #default="{ row }">
             {{ formatDateTime(row.created_at) }}
           </template>
         </el-table-column>
 
-        <el-table-column prop="user.username" label="创建者" width="120" />
+        <el-table-column prop="user.username" label="创建者" width="100" />
 
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -152,6 +154,13 @@
       v-model="logDialogVisible"
       :task-id="currentLogTaskId"
     />
+
+    <!-- 详情对话框 -->
+    <TaskDetailDialog
+      v-model="detailDialogVisible"
+      :task-id="currentDetailTaskId"
+      @view-logs="handleViewLogsFromDetail"
+    />
   </div>
 </template>
 
@@ -162,6 +171,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { formatDateTime } from '@/utils/date'
 import TaskLogDialog from './TaskLogDialog.vue'
+import TaskDetailDialog from './TaskDetailDialog.vue'
 
 interface Props {
   status?: string | null
@@ -183,6 +193,10 @@ const pagination = reactive({
 // 日志对话框状态
 const logDialogVisible = ref(false)
 const currentLogTaskId = ref<string | null>(null)
+
+// 详情对话框状态
+const detailDialogVisible = ref(false)
+const currentDetailTaskId = ref<string | null>(null)
 
 const hasCompletedTasks = computed(() => {
   return taskStore.tasks.some(t =>
@@ -212,6 +226,17 @@ const emit = defineEmits<{
 
 const handleViewLogs = (row: any) => {
   currentLogTaskId.value = row.task_id
+  logDialogVisible.value = true
+}
+
+const handleViewDetail = (row: any) => {
+  currentDetailTaskId.value = row.task_id
+  detailDialogVisible.value = true
+}
+
+const handleViewLogsFromDetail = (taskId: string) => {
+  detailDialogVisible.value = false
+  currentLogTaskId.value = taskId
   logDialogVisible.value = true
 }
 
@@ -374,15 +399,6 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.task-table :deep(.el-table__row) {
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.task-table :deep(.el-table__row:hover) {
-  background-color: #f5f5f5;
-}
-
 .task-table :deep(.el-table__cell) {
   padding: 8px 0;
 }
