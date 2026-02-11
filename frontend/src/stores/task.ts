@@ -3,7 +3,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { taskApi, type TaskListParams, type TaskItem } from '@/api/task'
+import { taskApi, type TaskListParams, type TaskItem, type TaskListResponse } from '@/api/task'
 import { ElMessage } from 'element-plus'
 
 export const useTaskStore = defineStore('task', () => {
@@ -47,7 +47,7 @@ export const useTaskStore = defineStore('task', () => {
     // 检查缓存
     if (!forceRefresh && cache.value.has(cacheKey)) {
       const cached = cache.value.get(cacheKey)
-      if (Date.now() - cached.timestamp < CACHE_TTL) {
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
         tasks.value = cached.data.tasks
         total.value = cached.data.total
         return
@@ -167,6 +167,34 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  /**
+   * 获取指定模块的正在运行的任务
+   * @param taskType 任务类型
+   * @param moduleId 模块 ID（可选，不传则返回所有匹配任务）
+   */
+  const getRunningTasksForModule = async (taskType: string, moduleId?: number): Promise<TaskItem[]> => {
+    try {
+      const response = await taskApi.getTasks({
+        status: 'running',
+        task_type: taskType,
+        page_size: 100
+      })
+
+      // 如果指定了 module_id，根据 request_params.module_id 过滤
+      if (moduleId !== undefined) {
+        return response.tasks.filter(task => {
+          const params = task.request_params as any
+          return params?.module_id === moduleId
+        })
+      }
+
+      return response.tasks
+    } catch (error) {
+      console.error('获取正在运行的任务失败:', error)
+      return []
+    }
+  }
+
   return {
     // 状态
     tasks,
@@ -185,6 +213,7 @@ export const useTaskStore = defineStore('task', () => {
     batchCancelTasks,
     cleanupTasks,
     clearCache,
-    updateTask
+    updateTask,
+    getRunningTasksForModule
   }
 })

@@ -384,9 +384,26 @@ async def generate_test_points_async(
     batch_size = max(2, concurrency * 2)
     total_batches = (len(request.requirement_points) + batch_size - 1) // batch_size
 
+    # 保存请求参数供后台任务使用（需要在使用前定义）
+    requirement_points = request.requirement_points
+    user_id = current_user.id
+
     # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_point_generation", total_batches)
     task_manager.set_task_user_id(task_id, current_user.id)
+
+    # 保存原始请求参数（包含 module_id，用于前端恢复状态）
+    request_params_dict = request.model_dump()
+    # 从 requirement_points 中提取 module_id（所有需求点应该属于同一模块）
+    if requirement_points and len(requirement_points) > 0:
+        first_rp_id = requirement_points[0].get("id")
+        if first_rp_id:
+            from app.models.requirement import RequirementPoint
+            first_rp = db.query(RequirementPoint).filter(RequirementPoint.id == first_rp_id).first()
+            if first_rp:
+                request_params_dict["module_id"] = first_rp.module_id
+
+    task_manager.set_task_request_params(task_id, request_params_dict)
     task_manager.start_task(task_id)
 
     # 获取agent_id
@@ -398,10 +415,6 @@ async def generate_test_points_async(
         ).first()
         if agent:
             agent_id = agent.id
-
-    # 保存请求参数供后台任务使用
-    requirement_points = request.requirement_points
-    user_id = current_user.id
 
     # 后台执行任务
     async def run_task():
@@ -603,6 +616,10 @@ async def design_test_cases_async(
     # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("test_case_design", total_batches)
     task_manager.set_task_user_id(task_id, current_user.id)
+
+    # 保存原始请求参数（包含 module_id，用于前端恢复状态）
+    task_manager.set_task_request_params(task_id, request.model_dump())
+
     task_manager.start_task(task_id)
     
     # 获取设计智能体ID

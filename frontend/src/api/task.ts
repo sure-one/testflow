@@ -35,6 +35,7 @@ export interface TaskItem {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  request_params?: any
   user?: {
     id: number
     username: string

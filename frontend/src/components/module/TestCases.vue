@@ -377,6 +377,7 @@ import { Plus, MagicStick, Edit, Delete, ArrowRight, View, Search, Loading } fro
 import { requirementApi } from '@/api/requirement'
 import { agentApi } from '@/api/agent'
 import { settingsApi } from '@/api/settings'
+import { useTaskStore } from '@/stores/task'
 
 const props = defineProps<{ projectId: number; moduleId: number }>()
 
@@ -426,6 +427,59 @@ const generatingTestPointIds = ref<number[]>([])
 
 // 轮询定时器存储（用于清理）
 const pollIntervals = ref<Map<string, ReturnType<typeof setInterval>>>(new Map())
+
+// 任务类型常量（测试用例设计任务）
+const TASK_TYPE = 'test_case_design'
+const taskStore = useTaskStore()
+
+// 轮询任务状态
+const startPollingForTask = (taskId: string) => {
+  let pollInterval: ReturnType<typeof setInterval> | null = null
+
+  const checkStatus = async () => {
+    try {
+      const status = await agentApi.getTaskStatus(taskId)
+
+      if (status.status === 'completed') {
+        if (pollInterval) clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+        loadHierarchy() // 刷新数据
+        const savedCount = status.result?.saved_count || 0
+        const optimizedCount = status.result?.optimized_count || 0
+        ElMessage.success(`成功生成 ${savedCount} 个测试用例${optimizedCount > 0 ? `，优化 ${optimizedCount} 个` : ''}`)
+      } else if (status.status === 'failed') {
+        if (pollInterval) clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+        ElMessage.error(status.error || '生成失败')
+      } else if (status.status === 'cancelled') {
+        if (pollInterval) clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+        ElMessage.warning('任务已取消')
+      }
+    } catch (pollError) {
+      console.warn('轮询任务状态失败:', pollError)
+    }
+  }
+
+  pollInterval = setInterval(checkStatus, 5000)
+  pollIntervals.value.set(taskId, pollInterval)
+}
+
+// 从后端恢复任务状态（只恢复属于当前模块的任务）
+const restoreTaskState = async () => {
+  const runningTasks = await taskStore.getRunningTasksForModule(TASK_TYPE, props.moduleId)
+
+  if (runningTasks.length > 0) {
+    const task = runningTasks[0]
+    console.log('发现正在运行的测试用例生成任务:', task.task_id)
+
+    generating.value = true
+    startPollingForTask(task.task_id)
+  }
+}
 
 // 计算属性
 const statistics = computed(() => ({
@@ -940,10 +994,11 @@ function getPriorityClass(priority: string | undefined | null) {
   return classes[priority || 'medium'] || classes.medium
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadHierarchy()
   loadDesignMethods()
   loadTestCategories()
+  await restoreTaskState()  // 恢复任务状态
 })
 
 // 组件卸载时清理轮询定时器

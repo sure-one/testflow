@@ -249,6 +249,7 @@ import { Plus, MagicStick, Edit, Delete, ArrowRight, Search } from '@element-plu
 import { requirementApi } from '@/api/requirement'
 import { agentApi } from '@/api/agent'
 import { settingsApi } from '@/api/settings'
+import { useTaskStore } from '@/stores/task'
 
 const props = defineProps<{ projectId: number; moduleId: number }>()
 
@@ -281,6 +282,11 @@ const generatingForPoint = ref<number | null>(null)
 
 // 轮询定时器存储（用于清理）
 const pollIntervals = ref<Map<string, ReturnType<typeof setInterval>>>(new Map())
+
+// 任务类型常量
+const TASK_TYPE = 'test_point_generation'
+
+const taskStore = useTaskStore()
 
 const statistics = computed(() => ({
   total_requirement_points: hierarchy.value.length,
@@ -336,6 +342,52 @@ watch(searchKeyword, () => {
 
 function handleSizeChange() {
   currentPage.value = 1
+}
+
+// 轮询任务状态
+const startPollingForTask = (taskId: string) => {
+  let pollInterval: ReturnType<typeof setInterval> | null = null
+
+  const checkStatus = async () => {
+    try {
+      const status = await agentApi.getTaskStatus(taskId)
+
+      if (status.status === 'completed') {
+        if (pollInterval) clearInterval(pollInterval as number)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+        loadHierarchy()
+        ElMessage.success('测试点生成完成')
+      } else if (status.status === 'failed') {
+        if (pollInterval) clearInterval(pollInterval as number)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+        ElMessage.error(status.error || '生成失败')
+      } else if (status.status === 'cancelled') {
+        if (pollInterval) clearInterval(pollInterval as number)
+        pollIntervals.value.delete(taskId)
+        generating.value = false
+      }
+    } catch (pollError) {
+      console.warn('轮询任务状态失败:', pollError)
+    }
+  }
+
+  pollInterval = setInterval(checkStatus, 5000)
+  pollIntervals.value.set(taskId, pollInterval)
+}
+
+// 从后端恢复任务状态（只恢复属于当前模块的任务）
+const restoreTaskState = async () => {
+  const runningTasks = await taskStore.getRunningTasksForModule(TASK_TYPE, props.moduleId)
+
+  if (runningTasks.length > 0) {
+    const task = runningTasks[0]
+    console.log('发现正在运行的任务:', task.task_id)
+
+    generating.value = true
+    startPollingForTask(task.task_id)
+  }
 }
 
 function toggleCollapse(id: number) {
@@ -482,16 +534,12 @@ async function generateTestPoints() {
   generating.value = true
 
   const requirementPoints = hierarchy.value.map(rp => ({ id: rp.id, content: rp.content }))
-  const shouldClearExisting = statistics.value.total_test_points > 0
-  let pollTaskId: string | null = null
 
   try {
     // 调用异步 API 创建任务
     const asyncResult = await agentApi.generateTestPointsAsync({
       requirement_points: requirementPoints
     })
-
-    pollTaskId = asyncResult.task_id
 
     // 显示通知
     ElNotification({
@@ -501,36 +549,8 @@ async function generateTestPoints() {
       duration: 3000
     })
 
-    // 轻量级轮询：仅检测任务状态，不显示进度对话框
-    const pollInterval = setInterval(async () => {
-      try {
-        const status = await agentApi.getTaskStatus(pollTaskId!)
-
-        if (status.status === 'completed') {
-          clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
-          generating.value = false
-          loadHierarchy() // 刷新数据
-          ElMessage.success('测试点生成完成')
-        } else if (status.status === 'failed') {
-          clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
-          generating.value = false
-          ElMessage.error(status.error || '生成失败')
-        } else if (status.status === 'cancelled') {
-          clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
-          generating.value = false
-          ElMessage.warning('任务已取消')
-        }
-      } catch (pollError) {
-        // 忽略轮询错误，继续尝试
-        console.warn('轮询任务状态失败:', pollError)
-      }
-    }, 5000) // 每 5 秒轮询一次
-
-    // 保存定时器引用，用于清理
-    pollIntervals.value.set(pollTaskId, pollInterval)
+    // 使用统一的轮询函数
+    startPollingForTask(asyncResult.task_id)
 
   } catch (error: any) {
     generating.value = false
@@ -572,7 +592,10 @@ async function generateTestPointsForSingle(reqPoint: any) {
       type: 'info',
       duration: 3000
     })
-
+    // 先检查，确保变量非空
+    if (!pollTaskId) {
+      throw new Error('任务创建失败，未返回任务 ID')
+    }
     // 轻量级轮询
     const pollInterval = setInterval(async () => {
       try {
@@ -580,18 +603,18 @@ async function generateTestPointsForSingle(reqPoint: any) {
 
         if (status.status === 'completed') {
           clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
+          pollIntervals.value.delete(pollTaskId!)
           generatingForPoint.value = null
           loadHierarchy()
           ElMessage.success('测试点生成完成')
         } else if (status.status === 'failed') {
           clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
+          pollIntervals.value.delete(pollTaskId!)
           generatingForPoint.value = null
           ElMessage.error(status.error || '生成失败')
         } else if (status.status === 'cancelled') {
           clearInterval(pollInterval)
-          pollIntervals.value.delete(pollTaskId)
+          pollIntervals.value.delete(pollTaskId!)
           generatingForPoint.value = null
         }
       } catch (pollError) {
@@ -685,10 +708,11 @@ onBeforeUnmount(() => {
   pollIntervals.value.clear()
 })
 
-onMounted(() => {
+onMounted(async () => {
   loadHierarchy()
   loadTestCategories()
   loadDesignMethods()
+  await restoreTaskState()  // 恢复任务状态
 })
 defineExpose({ loadHierarchy })
 </script>

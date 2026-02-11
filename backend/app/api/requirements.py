@@ -746,6 +746,15 @@ async def generate_all_test_artifacts(
     # 创建异步任务并设置 user_id
     task_id = task_manager.create_task("one_click_generation", total_batches=100)
     task_manager.set_task_user_id(task_id, current_user.id)
+
+    # 保存原始请求参数（包含 project_id 和 module_id，用于前端恢复状态）
+    task_manager.set_task_request_params(task_id, {
+        "project_id": project_id,
+        "module_id": module_id,
+        "file_id": file_id,
+        "agent_ids": agent_ids
+    })
+
     task_manager.start_task(task_id)
     
     print(f"\n{'='*60}")

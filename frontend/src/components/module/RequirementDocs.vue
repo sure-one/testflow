@@ -76,12 +76,12 @@
             </button>
             <button
               @click="generateRequirementPoints(doc)"
-              :disabled="!doc.is_extracted"
-              :title="!doc.is_extracted ? '文档内容尚未提取，无法生成需求点' : '使用AI智能体分析文档并生成需求点'"
+              :disabled="!doc.is_extracted || generatingPoints"
+              :title="!doc.is_extracted ? '文档内容尚未提取，无法生成需求点' : (generatingPoints ? '需求点生成中...' : '使用AI智能体分析文档并生成需求点')"
               class="px-4 py-2 bg-black text-white rounded-xl text-sm font-bold hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              <el-icon><MagicStick /></el-icon>
-              生成需求点
+              <el-icon :class="{ 'is-loading': generatingPoints }"><MagicStick /></el-icon>
+              {{ generatingPoints ? '生成中...' : '生成需求点' }}
             </button>
             <button
               @click="generateAllTestArtifacts(doc)"
@@ -197,10 +197,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox, type UploadInstance } from 'element-plus'
 import { Document, Upload, UploadFilled, Delete, MagicStick, View, Picture, Lightning } from '@element-plus/icons-vue'
 import api from '@/api'
+import { agentApi } from '@/api/agent'
+import { useTaskStore } from '@/stores/task'
 import DocumentViewerDialog from './DocumentViewerDialog.vue'
 import GeneratePointsDialog from './GeneratePointsDialog.vue'
 import PointsPreviewDialog from './PointsPreviewDialog.vue'
@@ -250,6 +252,18 @@ const generatedPoints = ref<any[]>([])
 const generatingAll = ref(false)
 const showProgressDialog = ref(false)
 const currentTaskId = ref<string | null>(null)
+
+// 需求点生成状态
+const generatingPoints = ref(false)
+const generatingPointsTaskId = ref<string | null>(null)
+
+// 轮询定时器存储（用于清理）
+const pollIntervals = ref<Map<string, ReturnType<typeof setInterval>>>(new Map())
+
+// 任务类型常量
+const TASK_TYPE_ONE_CLICK = 'one_click_generation'
+const TASK_TYPE_REQUIREMENT_ANALYSIS = 'requirement_analysis'
+const taskStore = useTaskStore()
 
 // 加载文档列表
 const loadDocuments = async () => {
@@ -387,7 +401,9 @@ const handleGenerateSuccess = (points: any[]) => {
 // 处理异步任务创建
 const handleAsyncTaskCreated = (taskId: string) => {
   console.log('异步任务已创建:', taskId)
-  // 任务已在 GeneratePointsDialog 中处理通知
+  generatingPoints.value = true
+  generatingPointsTaskId.value = taskId
+  startPollingForRequirementPoints(taskId)
 }
 
 // 关闭预览对话框
@@ -476,8 +492,73 @@ const formatDate = (dateString: string) => {
   return date.toLocaleString('zh-CN')
 }
 
-onMounted(() => {
-  loadDocuments()
+// 从后端恢复任务状态（只恢复属于当前模块的任务）
+const restoreTaskState = async () => {
+  // 恢复一键生成任务状态
+  const oneClickTasks = await taskStore.getRunningTasksForModule(TASK_TYPE_ONE_CLICK, props.moduleId)
+  if (oneClickTasks.length > 0) {
+    const task = oneClickTasks[0]
+    console.log('发现正在运行的一键生成任务:', task.task_id)
+    generatingAll.value = true
+    currentTaskId.value = task.task_id
+    showProgressDialog.value = true
+  }
+
+  // 恢复需求点生成任务状态
+  const requirementTasks = await taskStore.getRunningTasksForModule(TASK_TYPE_REQUIREMENT_ANALYSIS, props.moduleId)
+  if (requirementTasks.length > 0) {
+    const task = requirementTasks[0]
+    console.log('发现正在运行的需求点生成任务:', task.task_id)
+    generatingPoints.value = true
+    generatingPointsTaskId.value = task.task_id
+    startPollingForRequirementPoints(task.task_id)
+  }
+}
+
+// 轮询需求点生成任务状态
+const startPollingForRequirementPoints = (taskId: string) => {
+  const pollInterval = setInterval(async () => {
+    try {
+      const status = await agentApi.getTaskStatus(taskId)
+
+      if (status.status === 'completed') {
+        clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generatingPoints.value = false
+        generatingPointsTaskId.value = null
+        loadDocuments()
+        ElMessage.success('需求点生成完成！请到任务管理中查看结果')
+      } else if (status.status === 'failed') {
+        clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generatingPoints.value = false
+        generatingPointsTaskId.value = null
+        ElMessage.error(status.error || '生成失败')
+      } else if (status.status === 'cancelled') {
+        clearInterval(pollInterval)
+        pollIntervals.value.delete(taskId)
+        generatingPoints.value = false
+        generatingPointsTaskId.value = null
+      }
+    } catch (pollError) {
+      console.warn('轮询任务状态失败:', pollError)
+    }
+  }, 5000)
+
+  pollIntervals.value.set(taskId, pollInterval)
+}
+
+onMounted(async () => {
+  await loadDocuments()
+  await restoreTaskState()  // 恢复任务状态
+})
+
+// 组件卸载时清理轮询定时器
+onBeforeUnmount(() => {
+  pollIntervals.value.forEach((interval) => {
+    clearInterval(interval)
+  })
+  pollIntervals.value.clear()
 })
 </script>
 
