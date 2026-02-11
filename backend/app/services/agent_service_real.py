@@ -177,11 +177,14 @@ class AgentServiceReal:
             base_url=config["base_url"], temperature=config["temperature"], max_tokens=config["max_tokens"]
         )
     
-    async def _call_ai(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> str:
+    async def _call_ai(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """调用AI（带重试和超时机制）
 
         使用系统设置中的 retry_count 和 task_timeout 参数
         采用指数退避策略进行重试
+
+        Returns:
+            Dict[str, Any]: 包含 result (str) 和 tokens (int) 的字典
         """
         # 确保配置已加载
         self._load_config()
@@ -207,7 +210,7 @@ class AgentServiceReal:
                 else:
                     print(f"✅ AI调用成功 - Token: {total_tokens} (请求: {request_tokens}, 响应: {response_tokens})")
 
-                return result
+                return {"result": result, "tokens": total_tokens}
 
             except Exception as e:
                 last_error = str(e)
@@ -229,31 +232,34 @@ class AgentServiceReal:
 
     async def _call_ai_with_parse(self, config: Dict[str, Any], user_prompt: str, image_paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """调用AI并解析JSON（带重试机制）
-        
+
         如果JSON解析失败，会重新调用AI（因为可能是AI返回格式错误）
+
+        Returns:
+            Dict[str, Any]: 包含 result (解析后的JSON对象) 和 tokens (int) 的字典
         """
         # 确保配置已加载
         self._load_config()
-        
+
         last_error = None
         max_attempts = self._retry_count + 1
-        
+
         for attempt in range(max_attempts):
             try:
                 # 调用AI（已包含网络重试）
                 response = await self._call_ai(config, user_prompt, image_paths)
-                
+
                 # 尝试解析JSON
-                result = self._parse_json(response)
-                
+                result = self._parse_json(response["result"])
+
                 if attempt > 0:
                     print(f"✅ JSON解析成功 (第 {attempt + 1} 次尝试)")
-                
-                return result
-                
+
+                return {"result": result, "tokens": response.get("tokens", 0)}
+
             except Exception as e:
                 error_msg = str(e)
-                
+
                 # 判断是否是JSON解析错误
                 if "无法解析JSON" in error_msg:
                     last_error = f"JSON解析失败: {error_msg}"
@@ -261,13 +267,13 @@ class AgentServiceReal:
                 else:
                     # 其他错误（网络、超时等）已经在 _call_ai 中重试过了
                     raise
-                
+
                 # 如果还有重试机会，等待后重试
                 if attempt < max_attempts - 1:
                     delay = self._retry_delay * (2 ** attempt)
                     print(f"⏳ 等待 {delay} 秒后重新请求AI...")
                     await asyncio.sleep(delay)
-        
+
         # 所有重试都失败
         raise Exception(f"AI响应解析失败（已重试{self._retry_count}次）: {last_error}")
 
@@ -429,21 +435,59 @@ class AgentServiceReal:
     # ==================== 核心方法 ====================
     
     async def analyze_requirements(self, agent_id: int, content: str, image_paths: Optional[List[str]] = None) -> Dict[str, Any]:
-        """分析需求"""
+        """分析需求
+
+        Returns:
+            Dict[str, Any]: 包含需求分析结果
+        """
         config = await self._get_agent_config(agent_id)
         user_prompt = render_prompt(REQUIREMENT_ANALYSIS_USER, content=content)
-        return await self._call_ai_with_parse(config, user_prompt, image_paths)
+        response = await self._call_ai_with_parse(config, user_prompt, image_paths)
+        # 返回原始结果格式，向上兼容
+        return response["result"]
     
-    async def generate_test_points(self, agent_id: int, requirement_content: str) -> Dict[str, Any]:
-        """生成测试点"""
+    async def generate_test_points(self, agent_id: int, requirement_content: str, task_id: Optional[str] = None) -> Dict[str, Any]:
+        """生成测试点
+
+        Args:
+            agent_id: 智能体ID
+            requirement_content: 需求点内容
+            task_id: 任务ID（可选，用于记录Token日志）
+
+        Returns:
+            Dict[str, Any]: 包含测试点数据
+        """
         config = await self._get_agent_config(agent_id)
         user_prompt = render_prompt(
-            TEST_POINT_USER, 
-            content=requirement_content, 
+            TEST_POINT_USER,
+            content=requirement_content,
             test_categories=self._get_test_categories_text(),
             design_methods=self._get_design_methods_text()
         )
-        return await self._call_ai_with_parse(config, user_prompt)
+        response = await self._call_ai_with_parse(config, user_prompt)
+
+        # 记录Token使用
+        if task_id and response.get("tokens"):
+            from app.services.async_task_manager import task_manager
+            from app.models.ai_config import Agent
+            agent = self.db.query(Agent).filter(Agent.id == agent_id).first() if self.db else None
+            if agent:
+                from app.models.ai_config import AIModel
+                ai_model = self.db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first() if self.db else None
+                if ai_model:
+                    task_manager.add_agent_log(
+                        task_id,
+                        agent_name=agent.name,
+                        agent_type="TEST_POINT_GENERATOR",
+                        model_name=ai_model.model_id,
+                        provider=ai_model.provider or "openai",
+                        message=f"生成测试点（约 {response['tokens']} Token）",
+                        level="info",
+                        estimated_tokens=response['tokens']
+                    )
+
+        # 返回原始结果格式，向上兼容
+        return response["result"]
     
     async def design_test_case(
         self, 
@@ -475,50 +519,72 @@ class AgentServiceReal:
         return cases[0] if cases else {}
     
     async def design_test_cases_batch(
-        self, 
-        agent_id: int, 
+        self,
+        agent_id: int,
         test_points: List[dict],  # 测试点数组（1个或多个）
-        requirement_content: str = ""
+        requirement_content: str = "",
+        task_id: Optional[str] = None  # 可选的任务ID，用于记录Token日志
     ) -> List[Dict[str, Any]]:
         """批量设计测试用例（统一接口）
-        
+
         Args:
             agent_id: 智能体ID
             test_points: 测试点数组（可以是1个或多个）
             requirement_content: 原始需求文档内容
-            
+            task_id: 可选的任务ID，用于记录Token日志
+
         Returns:
             测试用例数组（与输入一一对应）
         """
         config = await self._get_agent_config(agent_id)
-        
+
         # 将测试点数组转换为JSON字符串
         test_points_json = json.dumps(test_points, ensure_ascii=False, indent=2)
-        
+
         user_prompt = render_prompt(
             TEST_CASE_DESIGN_USER,
             test_points=test_points_json,
             requirement_content=requirement_content or "（无需求文档）"
         )
-        
+
         count = len(test_points)
         print(f"\n🎯 测试用例设计: {count} 个测试点")
         if count <= 3:
             for tp in test_points:
                 preview = tp.get('content', '')[:40]
                 print(f"   - {preview}... (方法: {tp.get('design_method', 'N/A')})")
-        
+
         result = await self._call_ai_with_parse(config, user_prompt)
-        
+
+        # 记录Token使用
+        if task_id and result.get("tokens"):
+            from app.services.async_task_manager import task_manager
+            from app.models.ai_config import Agent
+            agent = self.db.query(Agent).filter(Agent.id == agent_id).first() if self.db else None
+            if agent:
+                from app.models.ai_config import AIModel
+                ai_model = self.db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first() if self.db else None
+                if ai_model:
+                    task_manager.add_agent_log(
+                        task_id,
+                        agent_name=agent.name,
+                        agent_type="TEST_CASE_DESIGNER",
+                        model_name=ai_model.model_id,
+                        provider=ai_model.provider or "openai",
+                        message=f"批量设计测试用例 {count} 个（约 {result['tokens']} Token）",
+                        level="info",
+                        estimated_tokens=result['tokens']
+                    )
+
         # 打印完整原始输出
         print(f"\n{'='*80}")
         print(f"📋 批量生成原始输出 (测试点数量: {count})")
         print(f"{'='*80}")
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result["result"], ensure_ascii=False, indent=2))
         print(f"{'='*80}\n")
-        
+
         # 提取测试用例数组
-        test_cases = result.get('test_cases', [])
+        test_cases = result["result"].get('test_cases', [])
         
         # 验证数量匹配
         if len(test_cases) != len(test_points):
@@ -536,11 +602,43 @@ class AgentServiceReal:
         
         return test_cases
     
-    async def optimize_test_cases(self, agent_id: int, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """批量优化测试用例"""
+    async def optimize_test_cases(self, agent_id: int, test_cases: List[Dict[str, Any]], task_id: Optional[str] = None) -> Dict[str, Any]:
+        """批量优化测试用例
+
+        Args:
+            agent_id: 智能体ID
+            test_cases: 测试用例列表
+            task_id: 可选的任务ID，用于记录Token日志
+
+        Returns:
+            Dict[str, Any]: 包含优化结果
+        """
         config = await self._get_agent_config(agent_id)
         user_prompt = render_prompt(TEST_CASE_BATCH_OPTIMIZE_USER, test_cases=json.dumps(test_cases, ensure_ascii=False, indent=2))
-        return await self._call_ai_with_parse(config, user_prompt)
+        response = await self._call_ai_with_parse(config, user_prompt)
+
+        # 记录Token使用
+        if task_id and response.get("tokens"):
+            from app.services.async_task_manager import task_manager
+            from app.models.ai_config import Agent
+            agent = self.db.query(Agent).filter(Agent.id == agent_id).first() if self.db else None
+            if agent:
+                from app.models.ai_config import AIModel
+                ai_model = self.db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first() if self.db else None
+                if ai_model:
+                    task_manager.add_agent_log(
+                        task_id,
+                        agent_name=agent.name,
+                        agent_type="TEST_CASE_OPTIMIZER",
+                        model_name=ai_model.model_id,
+                        provider=ai_model.provider or "openai",
+                        message=f"批量优化测试用例 {len(test_cases)} 个（约 {response['tokens']} Token）",
+                        level="info",
+                        estimated_tokens=response['tokens']
+                    )
+
+        # 返回原始结果格式，向上兼容
+        return response["result"]
 
     # ==================== 执行方法 ====================
     
@@ -622,6 +720,27 @@ class AgentServiceReal:
 
         print(f"\n🚀 并发测试点生成: {len(requirement_points)} 个需求点")
         print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次")
+
+        # 记录步骤开始
+        if task_id:
+            task_manager.add_step_log(
+                task_id,
+                step_name="测试点生成",
+                step_number=1,
+                total_steps=1,
+                message="开始执行测试点生成",
+                level="info"
+            )
+
+        # 记录批次信息（每个需求点作为一个批次）
+        if task_id:
+            task_manager.add_batch_log(
+                task_id,
+                current_batch=0,
+                total_batches=len(requirement_points),
+                message=f"开始并发生成测试点，共 {len(requirement_points)} 个需求点",
+                level="info"
+            )
         
         # 清空这些需求点相关的旧测试点（级联删除测试用例）
         if self.db and requirement_points:
@@ -651,7 +770,7 @@ class AgentServiceReal:
                 async with semaphore:  # 控制并发
                     try:
                         # 单个需求点生成测试点
-                        result = await self.generate_test_points(agent_id, req_point.get('content', str(req_point)))
+                        result = await self.generate_test_points(agent_id, req_point.get('content', str(req_point)), task_id)
                         
                         test_points = result.get("test_points", [])
                         # 关联需求点ID
@@ -659,7 +778,17 @@ class AgentServiceReal:
                             tp["requirement_point_id"] = req_point.get("id")
                         
                         print(f"✅ [{idx+1}/{len(requirement_points)}] 需求点生成 {len(test_points)} 个测试点")
-                        
+
+                        # 记录批次完成日志
+                        if task_id:
+                            task_manager.add_batch_log(
+                                task_id,
+                                current_batch=idx + 1,
+                                total_batches=len(requirement_points),
+                                message=f"需求点 {idx+1}/{len(requirement_points)} 生成完成，产生 {len(test_points)} 个测试点",
+                                level="info"
+                            )
+
                         # 更新进度（线程安全）
                         async with lock:
                             completed += 1
@@ -684,8 +813,19 @@ class AgentServiceReal:
             
             # 并发处理所有需求点
             await asyncio.gather(*[process_requirement(rp, i) for i, rp in enumerate(requirement_points)])
-            
+
             print(f"🎉 测试点生成完成, 共生成 {len(all_points)} 个测试点")
+
+            # 记录步骤完成
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试点生成",
+                    step_number=1,
+                    total_steps=1,
+                    message=f"测试点生成完成，共生成 {len(all_points)} 个测试点",
+                    level="info"
+                )
             
             return {"success": True, "data": {"test_points": all_points}}
             
@@ -720,6 +860,17 @@ class AgentServiceReal:
         """
         from app.services.async_task_manager import task_manager
         from app.models.requirement import RequirementFile
+
+        # 记录步骤开始
+        if task_id:
+            task_manager.add_step_log(
+                task_id,
+                step_name="测试用例设计",
+                step_number=1,
+                total_steps=1,
+                message="开始执行测试用例设计",
+                level="info"
+            )
         
         if self.db:
             task_manager.load_config_from_db(self.db)
@@ -798,7 +949,8 @@ class AgentServiceReal:
                         cases = await self.design_test_cases_batch(
                             agent_id=agent_id,
                             test_points=batch,
-                            requirement_content=requirement_content
+                            requirement_content=requirement_content,
+                            task_id=task_id
                         )
                         
                         # 继承测试点的属性
@@ -882,10 +1034,22 @@ class AgentServiceReal:
             
             # 并发处理所有批次
             await asyncio.gather(*[process_batch(batch, i) for i, batch in enumerate(batches)])
-            
+
             print(f"🎉 完成, 共 {len(all_cases)} 个用例, 已保存 {total_saved} 个")
+
+            # 记录步骤完成
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例设计",
+                    step_number=1,
+                    total_steps=1,
+                    message=f"测试用例设计完成，共生成 {len(all_cases)} 个测试用例",
+                    level="info"
+                )
+
             return {
-                "success": True, 
+                "success": True,
                 "data": {
                     "test_cases": all_cases,
                     "saved_count": total_saved,
@@ -979,6 +1143,27 @@ class AgentServiceReal:
 
         print(f"\n🚀 批量测试用例优化: {len(original_test_cases)} 个用例, 分 {total_batches} 批处理")
         print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次")
+
+        # 记录步骤开始
+        if task_id:
+            task_manager.add_step_log(
+                task_id,
+                step_name="测试用例优化",
+                step_number=1,
+                total_steps=1,
+                message="开始执行测试用例优化",
+                level="info"
+            )
+
+        # 记录批次信息
+        if task_id:
+            task_manager.add_batch_log(
+                task_id,
+                current_batch=0,
+                total_batches=total_batches,
+                message=f"开始批量优化测试用例，共 {total_batches} 个批次",
+                level="info"
+            )
         
         try:
             all_results = []
@@ -1000,7 +1185,7 @@ class AgentServiceReal:
                     
                     try:
                         # 一次AI调用处理整批
-                        result = await self.optimize_test_cases(agent_id, simplified_batch)
+                        result = await self.optimize_test_cases(agent_id, simplified_batch, task_id)
                         optimized_cases = result.get("optimized_cases", [])
                         
                         # 创建id到原始用例的映射
@@ -1071,10 +1256,21 @@ class AgentServiceReal:
             
             # 并发处理所有批次
             await asyncio.gather(*[process_batch(i, batch) for i, batch in enumerate(batches)])
-            
+
             success_count = sum(1 for r in all_results if r.get("success"))
             print(f"🎉 优化完成, 成功 {success_count}/{len(original_test_cases)} 个")
-            
+
+            # 记录步骤完成
+            if task_id:
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="测试用例优化",
+                    step_number=1,
+                    total_steps=1,
+                    message=f"测试用例优化完成，成功优化 {success_count}/{len(original_test_cases)} 个",
+                    level="info"
+                )
+
             return {"success": True, "data": {
                 "optimized_results": all_results,
                 "optimized_cases": [r["optimized"] for r in all_results if r.get("optimized")],

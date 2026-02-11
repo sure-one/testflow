@@ -1176,7 +1176,7 @@ class AsyncTaskManager:
         current_batch: int,
         total_batches: int,
         message: str,
-        level: str = "debug"
+        level: str = "info"
     ) -> None:
         """记录批次日志（便捷方法）
 
@@ -1185,7 +1185,7 @@ class AsyncTaskManager:
             current_batch: 当前批次号（从1开始）
             total_batches: 总批次数
             message: 日志消息
-            level: 日志级别（默认为 debug，可减少日志量）
+            level: 日志级别（默认为 info）
         """
         self.add_log(
             task_id,

@@ -36,6 +36,7 @@
         clearable
         style="width: 120px"
       >
+        <el-option label="调试" value="debug" />
         <el-option label="信息" value="info" />
         <el-option label="警告" value="warning" />
         <el-option label="错误" value="error" />
@@ -118,7 +119,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { Refresh, Location, User, Coin, Files, Clock } from '@element-plus/icons-vue'
-import { taskApi, type TaskLogItem } from '@/api/task'
+import { taskApi, type TaskLogItem, type TaskItem } from '@/api/task'
 import { formatDateTime } from '@/utils/date'
 
 interface Props {
@@ -138,6 +139,7 @@ const visible = computed({
 
 const loading = ref(false)
 const logs = ref<TaskLogItem[]>([])
+const taskDetail = ref<TaskItem | null>(null)
 const levelFilter = ref<string | null>(null)
 
 const filteredLogs = computed(() => {
@@ -152,16 +154,35 @@ const statistics = computed(() => {
   if (logs.value.length === 0) return null
 
   let totalTokens = 0
-  let totalDuration = 0
   let totalSteps = 0
   let totalBatches = 0
 
   logs.value.forEach(log => {
-    if (log.estimated_tokens) totalTokens += log.estimated_tokens
-    if (log.duration_ms) totalDuration += log.duration_ms
-    if (log.step_number) totalSteps = Math.max(totalSteps, log.step_number)
-    if (log.total_batches) totalBatches = Math.max(totalBatches, log.total_batches)
+    if (log.estimated_tokens != null) totalTokens += log.estimated_tokens
+    if (log.step_number != null) totalSteps = Math.max(totalSteps, log.step_number)
+    if (log.total_batches != null) totalBatches = Math.max(totalBatches, log.total_batches)
   })
+
+  // 使用任务的 started_at 和 completed_at 计算总时长
+  // 如果任务失败（没有 completed_at），使用最后一条日志的时间戳
+  let totalDuration = 0
+  if (taskDetail.value?.started_at) {
+    const start = new Date(taskDetail.value.started_at).getTime()
+    let endTime: number
+
+    if (taskDetail.value.completed_at) {
+      // 任务正常完成
+      endTime = new Date(taskDetail.value.completed_at).getTime()
+    } else if (logs.value.length > 0) {
+      // 任务失败或未完成，使用最后一条日志的时间戳
+      endTime = new Date(logs.value[0].timestamp).getTime()
+    } else {
+      // 没有日志，无法计算
+      endTime = Date.now()
+    }
+
+    totalDuration = endTime - start
+  }
 
   return {
     totalSteps,
@@ -176,8 +197,12 @@ const fetchLogs = async () => {
 
   loading.value = true
   try {
-    const response = await taskApi.getTaskLogs(props.taskId)
-    logs.value = response.logs
+    const [logsRes, taskRes] = await Promise.all([
+      taskApi.getTaskLogs(props.taskId),
+      taskApi.getTaskDetail(props.taskId)
+    ])
+    logs.value = logsRes.logs
+    taskDetail.value = taskRes.task
   } catch (error) {
     console.error('获取任务日志失败:', error)
   } finally {
@@ -215,6 +240,7 @@ const getLogTagType = (level: string) => {
 
 const getLogLevelLabel = (level: string) => {
   const labels: Record<string, string> = {
+    debug: '调试',
     info: '信息',
     warning: '警告',
     error: '错误'

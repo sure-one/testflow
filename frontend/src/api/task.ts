@@ -50,7 +50,7 @@ export interface TaskDetailResponse {
 export interface TaskLogItem {
   id: number
   task_id: string
-  level: 'info' | 'warning' | 'error'
+  level: 'debug' | 'info' | 'warning' | 'error'
   message: string
   timestamp: string
 

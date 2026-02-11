@@ -209,6 +209,16 @@ async def analyze_requirements_async(
         try:
             service = AgentServiceReal(db=task_db)
 
+            # 记录步骤开始
+            task_manager.add_step_log(
+                task_id,
+                step_name="需求分析",
+                step_number=1,
+                total_steps=1,
+                message="开始执行需求分析",
+                level="info"
+            )
+
             # 更新进度
             task_manager.update_progress(task_id, 10, "正在分析需求文档...")
 
@@ -217,14 +227,17 @@ async def analyze_requirements_async(
             if agent:
                 ai_model = task_db.query(AIModel).filter(AIModel.id == agent.ai_model_id).first()
                 if ai_model:
+                    # 估算输入 Token
+                    request_tokens = service._estimate_tokens(requirement_content)
                     task_manager.add_agent_log(
                         task_id,
                         agent_name=agent.name,
                         agent_type="REQUIREMENT_SPLITTER",
                         model_name=ai_model.model_id,
                         provider=ai_model.provider or "openai",
-                        message=f"开始分析需求文档（支持多模态）",
-                        level="info"
+                        message=f"开始分析需求文档（输入约 {request_tokens} Token，支持多模态）",
+                        level="info",
+                        estimated_tokens=request_tokens
                     )
 
             # 执行需求分析
@@ -237,6 +250,17 @@ async def analyze_requirements_async(
             )
 
             if result.get("success"):
+                # 记录步骤完成
+                requirement_points = result.get("data", {}).get("requirement_points", [])
+                task_manager.add_step_log(
+                    task_id,
+                    step_name="需求分析",
+                    step_number=1,
+                    total_steps=1,
+                    message=f"需求分析完成，生成 {len(requirement_points)} 个需求点",
+                    level="info"
+                )
+
                 # 添加元数据便于前端编辑
                 result_data = result.get("data", {})
                 result_data["metadata"] = {
