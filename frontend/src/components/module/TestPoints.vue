@@ -154,48 +154,6 @@
       />
     </div>
 
-    <!-- 生成中对话框 -->
-    <el-dialog
-      v-model="showGeneratingDialog"
-      title="生成测试点"
-      width="450px"
-      :close-on-click-modal="false"
-      :show-close="!generating"
-      @close="cancelGeneration"
-      align-center
-      append-to-body
-      class="generating-dialog"
-    >
-      <div class="text-center py-6">
-        <div class="w-16 h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center">
-          <el-icon class="is-loading text-3xl text-gray-600"><Loading /></el-icon>
-        </div>
-        <p class="text-gray-800 font-bold mb-2">正在生成测试点</p>
-        <p class="text-gray-500 text-sm mb-4">
-          {{ getProgressText() }}
-        </p>
-        <div class="px-8">
-          <el-progress
-            :percentage="generationProgress"
-            :stroke-width="8"
-            :show-text="false"
-            color="#000"
-          />
-        </div>
-        <p class="text-xs text-gray-400 mt-4">共 {{ hierarchy.length }} 个需求点，请耐心等待</p>
-      </div>
-      <template #footer>
-        <div class="flex justify-center pt-2">
-          <button
-            @click="cancelGeneration"
-            class="px-6 py-2 text-gray-500 hover:text-gray-700 text-sm"
-          >
-            取消任务
-          </button>
-        </div>
-      </template>
-    </el-dialog>
-
     <!-- 添加/编辑对话框 -->
     <el-dialog
       v-model="showDialog"
@@ -285,9 +243,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, MagicStick, Loading, Edit, Delete, ArrowRight, Search } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { Plus, MagicStick, Edit, Delete, ArrowRight, Search } from '@element-plus/icons-vue'
 import { requirementApi } from '@/api/requirement'
 import { agentApi } from '@/api/agent'
 import { settingsApi } from '@/api/settings'
@@ -297,19 +255,18 @@ const props = defineProps<{ projectId: number; moduleId: number }>()
 const loading = ref(false)
 const generating = ref(false)
 const saving = ref(false)
-const showGeneratingDialog = ref(false)
 const showDialog = ref(false)
 const activeNames = ref<number[]>([])
 const hierarchy = ref<any[]>([])
 const currentPage = ref(1)
 const pageSize = ref(10)
 const editingTestPoint = ref<any>(null)
-const form = ref({ 
-  content: '', 
-  test_type: 'functional', 
+const form = ref({
+  content: '',
+  test_type: 'functional',
   design_method: '',
-  priority: 'medium', 
-  requirement_point_id: 0 
+  priority: 'medium',
+  requirement_point_id: 0
 })
 
 // 搜索
@@ -319,12 +276,11 @@ const searchKeyword = ref('')
 const testCategories = ref<any[]>([])
 const designMethods = ref<any[]>([])
 
-// 异步任务状态
-const generationProgress = ref(0)
-const generationMessage = ref('')
-const currentTaskId = ref<string | null>(null)
-const isCancelling = ref(false)
+// 单个需求点生成状态
 const generatingForPoint = ref<number | null>(null)
+
+// 轮询定时器存储（用于清理）
+const pollIntervals = ref<Map<string, ReturnType<typeof setInterval>>>(new Map())
 
 const statistics = computed(() => ({
   total_requirement_points: hierarchy.value.length,
@@ -505,8 +461,11 @@ async function deleteTestPoint(tp: any) {
 }
 
 async function generateTestPoints() {
-  if (!hasRequirementPoints.value) { ElMessage.warning('请先生成需求点'); return }
-  
+  if (!hasRequirementPoints.value) {
+    ElMessage.warning('请先生成需求点')
+    return
+  }
+
   // 如果已有测试点，先确认是否清空
   if (statistics.value.total_test_points > 0) {
     try {
@@ -519,210 +478,133 @@ async function generateTestPoints() {
       return // 用户取消
     }
   }
-  
+
   generating.value = true
-  showGeneratingDialog.value = true
-  generationProgress.value = 0
-  generationMessage.value = ''
-  currentTaskId.value = null
-  isCancelling.value = false
-  
+
   const requirementPoints = hierarchy.value.map(rp => ({ id: rp.id, content: rp.content }))
-  
-  // 记录是否需要清空现有测试点
   const shouldClearExisting = statistics.value.total_test_points > 0
-  
+  let pollTaskId: string | null = null
+
   try {
-    // 使用异步模式启动任务（测试分类和设计方法由后端从系统设置自动加载）
+    // 调用异步 API 创建任务
     const asyncResult = await agentApi.generateTestPointsAsync({
       requirement_points: requirementPoints
     })
-    
-    currentTaskId.value = asyncResult.task_id
-    
-    // 轮询任务状态
-    let pollCount = 0
-    let errorCount = 0
-    const maxPolls = 180 // 最多轮询180次（约3分钟）
-    const maxErrors = 5 // 最多允许5次连续错误
-    
-    while (pollCount < maxPolls && !isCancelling.value) {
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      pollCount++
-      
+
+    pollTaskId = asyncResult.task_id
+
+    // 显示通知
+    ElNotification({
+      title: '任务已启动',
+      message: '测试点正在生成中，完成后将自动刷新',
+      type: 'info',
+      duration: 3000
+    })
+
+    // 轻量级轮询：仅检测任务状态，不显示进度对话框
+    const pollInterval = setInterval(async () => {
       try {
-        const status = await agentApi.getTaskStatus(currentTaskId.value)
-        errorCount = 0 // 成功后重置错误计数
-        generationProgress.value = status.progress
-        
+        const status = await agentApi.getTaskStatus(pollTaskId!)
+
         if (status.status === 'completed') {
-          // 任务完成，保存测试点
-          if (status.result?.test_points) {
-            const pointsToCreate = status.result.test_points.map((tp: any, i: number) => ({
-              content: tp.content,
-              test_type: tp.test_type || 'functional',
-              design_method: tp.design_method,
-              priority: tp.priority || 'medium',
-              requirement_point_id: tp.requirement_point_id || requirementPoints[i % requirementPoints.length]?.id,
-              created_by_ai: true
-            }))
-            // 批量创建，如果需要则先清空现有测试点
-            const saveResult = await requirementApi.batchCreateModuleTestPoints(
-              props.projectId, 
-              props.moduleId, 
-              pointsToCreate,
-              shouldClearExisting  // 传入是否清空现有测试点
-            )
-            if (saveResult.success) {
-              const msg = shouldClearExisting && saveResult.deleted_count 
-                ? `已清空 ${saveResult.deleted_count} 个旧测试点，成功生成 ${saveResult.created_count} 个新测试点`
-                : `成功生成 ${saveResult.created_count} 个测试点`
-              ElMessage.success(msg)
-            }
-          }
-          break
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generating.value = false
+          loadHierarchy() // 刷新数据
+          ElMessage.success('测试点生成完成')
         } else if (status.status === 'failed') {
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generating.value = false
           ElMessage.error(status.error || '生成失败')
-          break
         } else if (status.status === 'cancelled') {
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generating.value = false
           ElMessage.warning('任务已取消')
-          break
         }
       } catch (pollError) {
-        errorCount++
-        console.warn(`轮询任务状态失败 (${errorCount}/${maxErrors}):`, pollError)
-        if (errorCount >= maxErrors) {
-          ElMessage.error('获取任务状态失败，请刷新页面查看结果')
-          break
-        }
-        // 继续轮询，不中断
+        // 忽略轮询错误，继续尝试
+        console.warn('轮询任务状态失败:', pollError)
       }
-    }
-    
-    if (pollCount >= maxPolls && !isCancelling.value) {
-      ElMessage.warning('任务超时，请稍后刷新查看结果')
-    }
-  } catch (error: any) {
-    if (!isCancelling.value) {
-      ElMessage.error(error.message || '生成失败')
-    }
-  } finally {
-    generating.value = false
-    showGeneratingDialog.value = false
-    generationProgress.value = 0
-    generationMessage.value = ''
-    currentTaskId.value = null
-    isCancelling.value = false
-    loadHierarchy()
-  }
-}
+    }, 5000) // 每 5 秒轮询一次
 
-async function cancelGeneration() {
-  if (!generating.value) {
-    showGeneratingDialog.value = false
-    return
+    // 保存定时器引用，用于清理
+    pollIntervals.value.set(pollTaskId, pollInterval)
+
+  } catch (error: any) {
+    generating.value = false
+    ElMessage.error(error.message || '创建任务失败')
   }
-  
-  isCancelling.value = true
-  
-  if (currentTaskId.value) {
-    try {
-      await agentApi.cancelTask(currentTaskId.value)
-      ElMessage.info('正在取消任务...')
-    } catch (error) {
-      console.error('取消任务失败:', error)
-    }
-  }
-  
-  generating.value = false
-  showGeneratingDialog.value = false
 }
 
 async function generateTestPointsForSingle(reqPoint: any) {
   generatingForPoint.value = reqPoint.id
-  
+
+  // 构建需求点数据，包含已有测试点信息
+  const requirementPointData: any = {
+    id: reqPoint.id,
+    content: reqPoint.content
+  }
+
+  // 如果有已有测试点，序列化传输给AI
+  if (reqPoint.test_points && reqPoint.test_points.length > 0) {
+    requirementPointData.existing_test_points = reqPoint.test_points.map((tp: any) => ({
+      content: tp.content,
+      test_type: tp.test_type,
+      design_method: tp.design_method,
+      priority: tp.priority
+    }))
+  }
+
+  let pollTaskId: string | null = null
+
   try {
-    // 构建需求点数据，包含已有测试点信息
-    const requirementPointData: any = {
-      id: reqPoint.id,
-      content: reqPoint.content
-    }
-    
-    // 如果有已有测试点，序列化传输给AI
-    if (reqPoint.test_points && reqPoint.test_points.length > 0) {
-      requirementPointData.existing_test_points = reqPoint.test_points.map((tp: any) => ({
-        content: tp.content,
-        test_type: tp.test_type,
-        design_method: tp.design_method,
-        priority: tp.priority
-      }))
-    }
-    
-    // 调用AI生成测试点
     const result = await agentApi.generateTestPointsAsync({
       requirement_points: [requirementPointData]
     })
-    
-    const taskId = result.task_id
-    
-    // 轮询任务状态
-    let pollCount = 0
-    const maxPolls = 60 // 最多轮询60次（约1分钟）
-    
-    while (pollCount < maxPolls) {
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      pollCount++
-      
+
+    pollTaskId = result.task_id
+
+    ElNotification({
+      title: '任务已启动',
+      message: '测试点正在生成中',
+      type: 'info',
+      duration: 3000
+    })
+
+    // 轻量级轮询
+    const pollInterval = setInterval(async () => {
       try {
-        const status = await agentApi.getTaskStatus(taskId)
-        
+        const status = await agentApi.getTaskStatus(pollTaskId!)
+
         if (status.status === 'completed') {
-          // 任务完成，保存测试点
-          if (status.result?.test_points) {
-            const pointsToCreate = status.result.test_points.map((tp: any) => ({
-              content: tp.content,
-              test_type: tp.test_type || 'functional',
-              design_method: tp.design_method,
-              priority: tp.priority || 'medium',
-              requirement_point_id: reqPoint.id,
-              created_by_ai: true
-            }))
-            
-            // 批量创建测试点
-            const saveResult = await requirementApi.batchCreateModuleTestPoints(
-              props.projectId,
-              props.moduleId,
-              pointsToCreate,
-              false // 不清空现有测试点
-            )
-            
-            if (saveResult.success) {
-              ElMessage.success(`成功为需求点生成 ${saveResult.created_count} 个测试点`)
-              // 刷新列表
-              loadHierarchy()
-            }
-          }
-          break
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generatingForPoint.value = null
+          loadHierarchy()
+          ElMessage.success('测试点生成完成')
         } else if (status.status === 'failed') {
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generatingForPoint.value = null
           ElMessage.error(status.error || '生成失败')
-          break
         } else if (status.status === 'cancelled') {
-          ElMessage.warning('任务已取消')
-          break
+          clearInterval(pollInterval)
+          pollIntervals.value.delete(pollTaskId)
+          generatingForPoint.value = null
         }
       } catch (pollError) {
         console.warn('轮询任务状态失败:', pollError)
-        // 继续轮询
       }
-    }
-    
-    if (pollCount >= maxPolls) {
-      ElMessage.warning('任务超时，请稍后刷新查看结果')
-    }
+    }, 5000)
+
+    // 保存定时器引用，用于清理
+    pollIntervals.value.set(pollTaskId, pollInterval)
+
   } catch (error: any) {
-    ElMessage.error(error.message || '生成失败')
-  } finally {
     generatingForPoint.value = null
+    ElMessage.error(error.message || '创建任务失败')
   }
 }
 
@@ -795,17 +677,13 @@ function getPriorityClass(p: string | undefined | null) {
   return classes[p || 'medium'] || classes.medium
 }
 
-function getProgressText() {
-  if (generationProgress.value >= 100) {
-    return '生成完成，正在保存...'
-  } else if (generationProgress.value > 0) {
-    return `已完成 ${generationProgress.value}%`
-  } else if (currentTaskId.value) {
-    return 'AI智能体正在分析需求点...'
-  } else {
-    return '正在启动任务...'
-  }
-}
+// 组件卸载时清理轮询定时器
+onBeforeUnmount(() => {
+  pollIntervals.value.forEach((interval) => {
+    clearInterval(interval)
+  })
+  pollIntervals.value.clear()
+})
 
 onMounted(() => {
   loadHierarchy()

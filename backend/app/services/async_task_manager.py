@@ -72,7 +72,7 @@ class AsyncTaskManager:
 
     # 默认配置值
     DEFAULT_MAX_CONCURRENT_TASKS = 3
-    DEFAULT_TASK_TIMEOUT = 300  # 秒（与 httpx 超时保持一致）
+    # DEFAULT_TASK_TIMEOUT 已移除，超时现在由 HTTP 层控制
     DEFAULT_RETRY_COUNT = 3
     DEFAULT_QUEUE_SIZE = 100
     DEFAULT_LOG_LEVEL = "info"  # 默认日志级别
@@ -95,7 +95,7 @@ class AsyncTaskManager:
 
         # 并发配置（从系统设置加载）
         self._max_concurrent_tasks: int = self.DEFAULT_MAX_CONCURRENT_TASKS
-        self._task_timeout: int = self.DEFAULT_TASK_TIMEOUT
+        # _task_timeout 已移除，超时现在完全由 HTTP 层控制
         self._retry_count: int = self.DEFAULT_RETRY_COUNT
         self._queue_size: int = self.DEFAULT_QUEUE_SIZE
         self._log_level: str = self.DEFAULT_LOG_LEVEL  # 日志级别
@@ -126,23 +126,24 @@ class AsyncTaskManager:
     
     def load_config_from_db(self, db: "Session") -> None:
         """从数据库加载并发配置
-        
+
         Args:
             db: 数据库会话
         """
         try:
             from app.services.settings_service import SettingsService
-            
+
             config = SettingsService.get_concurrency_config(db)
             self._max_concurrent_tasks = config.max_concurrent_tasks
-            self._task_timeout = config.task_timeout
+            # 注意：http_timeout 现在控制 HTTP 请求超时，不再用于 asyncio.wait_for
+            # asyncio.wait_for 已被移除，超时完全由 HTTP 层控制
             self._retry_count = config.retry_count
             self._queue_size = config.queue_size
             self._config_loaded = True
-            
+
             print(f"[AsyncTaskManager] 已加载并发配置: "
                   f"max_concurrent_tasks={self._max_concurrent_tasks}, "
-                  f"task_timeout={self._task_timeout}s, "
+                  f"http_timeout={config.http_timeout}s, "
                   f"retry_count={self._retry_count}, "
                   f"queue_size={self._queue_size}")
         except Exception as e:
@@ -158,17 +159,12 @@ class AsyncTaskManager:
             db: 数据库会话
         """
         self.load_config_from_db(db)
-    
+
     @property
     def max_concurrent_tasks(self) -> int:
         """获取最大并发任务数"""
         return self._max_concurrent_tasks
-    
-    @property
-    def task_timeout(self) -> int:
-        """获取任务超时时间（秒）"""
-        return self._task_timeout
-    
+
     @property
     def retry_count(self) -> int:
         """获取失败重试次数"""
@@ -947,7 +943,8 @@ class AsyncTaskManager:
     def timeout_task(self, task_id: str):
         """标记任务超时
 
-        当任务执行时间超过配置的超时时间时调用
+        注意：此方法不再被 execute_with_timeout 自动调用（因为移除了 asyncio.wait_for）
+        保留此方法是为了兼容性，以防其他地方仍有手动调用
 
         Args:
             task_id: 任务 ID
@@ -962,17 +959,18 @@ class AsyncTaskManager:
         task = self._tasks.get(task_id)
         if task:
             task.status = AsyncTaskStatus.TIMEOUT
-            task.error = f"任务执行超时（超过{self._task_timeout}秒）"
+            # 由于 _task_timeout 已移除，使用通用超时消息
+            task.error = "任务执行超时"
             task.completed_at = datetime.utcnow()
 
             # 强制同步到数据库
             self.force_progress_update(task_id)
 
             # 记录日志
-            self.add_log(task_id, f"任务执行超时（超过{self._task_timeout}秒）", "error")
+            self.add_log(task_id, "任务执行超时", "error")
 
             # 添加控制台日志输出
-            print(f"❌ [AsyncTaskManager] 任务 {task_id} 执行超时（超过{self._task_timeout}秒）")
+            print(f"❌ [AsyncTaskManager] 任务 {task_id} 执行超时")
 
         # 取消正在运行的 asyncio 任务
         if task_id in self._running_tasks:
@@ -1033,24 +1031,26 @@ class AsyncTaskManager:
         self._running_tasks[task_id] = asyncio_task
     
     async def execute_with_timeout(self, task_id: str, coro) -> Any:
-        """执行任务并应用超时限制
-        
+        """执行任务（不应用超时限制）
+
+        超时由内层 HTTP 请求和重试机制控制。
+        如果所有重试都失败，任务自然返回失败。
+
+        设计变更：移除了 asyncio.wait_for 包裹，原因是：
+        - 原先的任务层超时会在 AI 重试完成前强制中断
+        - HTTP 层超时（httpx.TimeoutException）已经足够可靠
+        - 重试次数有上限（默认3次），不会无限循环
+
         Args:
             task_id: 任务ID
             coro: 要执行的协程
-            
+
         Returns:
             协程的返回值
-            
-        Raises:
-            asyncio.TimeoutError: 当任务超时时抛出
         """
-        try:
-            result = await asyncio.wait_for(coro, timeout=self._task_timeout)
-            return result
-        except asyncio.TimeoutError:
-            self.timeout_task(task_id)
-            raise
+        # 直接执行，不使用 asyncio.wait_for
+        # 超时由 httpx.AsyncClient 的 timeout 参数控制
+        return await coro
     
     def _process_pending_queue(self):
         """处理等待队列中的任务
@@ -1241,7 +1241,7 @@ class AsyncTaskManager:
         """
         return {
             "max_concurrent_tasks": self._max_concurrent_tasks,
-            "task_timeout": self._task_timeout,
+            # task_timeout 已移除，超时现在由 HTTP 层控制
             "retry_count": self._retry_count,
             "queue_size": self._queue_size,
             "config_loaded": self._config_loaded,

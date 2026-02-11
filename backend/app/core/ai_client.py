@@ -29,13 +29,18 @@ class AIResponse(BaseModel):
 
 class BaseAIClient(ABC):
     """AI客户端基础抽象类"""
-    
+
     def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gpt-3.5-turbo"):
+        from app.config import settings
+
         self.api_key = api_key
         self.base_url = base_url or "https://api.openai.com/v1"
         self.model = model
+
+        # 从配置读取 HTTP 超时时间
+        http_timeout = getattr(settings, 'ai_http_timeout', 120)
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0),
+            timeout=httpx.Timeout(http_timeout),
             headers={"Authorization": f"Bearer {api_key}"}
         )
     

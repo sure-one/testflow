@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     # AI模型配置
     default_ai_provider: str = "openai"
     default_model: str = "gpt-3.5-turbo"
-    ai_request_timeout: int = 60
+    ai_request_timeout: int = 60  # 保留用于其他用途
+    ai_http_timeout: int = 120  # HTTP 单次请求超时（秒）
     max_tokens: int = 2000
     temperature: float = 0.7
 

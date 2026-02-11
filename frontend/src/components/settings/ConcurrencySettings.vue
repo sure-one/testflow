@@ -37,12 +37,12 @@
           </div>
         </el-form-item>
 
-        <!-- 任务超时时间 -->
-        <el-form-item label="任务超时时间" prop="task_timeout">
+        <!-- HTTP请求超时 -->
+        <el-form-item label="HTTP请求超时" prop="http_timeout">
           <div class="w-full">
             <el-input-number
-              v-model="formData.task_timeout"
-              :min="60"
+              v-model="formData.http_timeout"
+              :min="30"
               :max="600"
               :step="30"
               controls-position="right"
@@ -50,7 +50,7 @@
             />
             <span class="ml-2 text-gray-500">秒</span>
             <div class="text-xs text-gray-400 mt-2">
-              单个任务的最大执行时间（范围：60-600秒，默认300秒）
+              单次HTTP请求的最大等待时间（范围：30-600秒，默认120秒）
             </div>
           </div>
         </el-form-item>
@@ -117,7 +117,7 @@
       </h4>
       <ul class="text-sm text-blue-800 space-y-2">
         <li>• <strong>最大并发任务数</strong>：控制同时运行的AI生成任务数量，较高的值可以提高吞吐量，但会增加系统负载</li>
-        <li>• <strong>任务超时时间</strong>：单个任务的最大执行时间，超时后任务将被终止并报告错误</li>
+        <li>• <strong>HTTP请求超时</strong>：单次AI API调用的最大等待时间，超时后会自动重试</li>
         <li>• <strong>失败重试次数</strong>：任务失败后自动重试的次数，设为0表示不重试</li>
         <li>• <strong>任务队列大小</strong>：等待执行的任务队列容量，超出后新任务将被拒绝</li>
       </ul>
@@ -142,7 +142,7 @@ const originalConfig = ref<ConcurrencyConfig | null>(null)
 // 表单数据
 const formData = reactive<ConcurrencyConfig>({
   max_concurrent_tasks: 3,
-  task_timeout: 300,
+  http_timeout: 120,
   retry_count: 3,
   queue_size: 100
 })
@@ -153,8 +153,8 @@ const formRules: FormRules = {
     { required: true, message: '请输入最大并发任务数', trigger: 'blur' },
     { type: 'number', min: 1, max: 10, message: '值必须在1-10之间', trigger: 'blur' }
   ],
-  task_timeout: [
-    { required: true, message: '请输入任务超时时间', trigger: 'blur' },
+  http_timeout: [
+    { required: true, message: '请输入HTTP请求超时时间', trigger: 'blur' },
     { type: 'number', min: 30, max: 600, message: '值必须在30-600之间', trigger: 'blur' }
   ],
   retry_count: [
@@ -172,7 +172,7 @@ const hasChanges = computed(() => {
   if (!originalConfig.value) return false
   return (
     formData.max_concurrent_tasks !== originalConfig.value.max_concurrent_tasks ||
-    formData.task_timeout !== originalConfig.value.task_timeout ||
+    formData.http_timeout !== originalConfig.value.http_timeout ||
     formData.retry_count !== originalConfig.value.retry_count ||
     formData.queue_size !== originalConfig.value.queue_size
   )
@@ -185,7 +185,7 @@ const loadConfig = async () => {
     const config = await settingsApi.getConcurrencyConfig()
     originalConfig.value = { ...config }
     formData.max_concurrent_tasks = config.max_concurrent_tasks
-    formData.task_timeout = config.task_timeout
+    formData.http_timeout = config.http_timeout
     formData.retry_count = config.retry_count
     formData.queue_size = config.queue_size
   } catch (error: any) {
@@ -199,7 +199,7 @@ const loadConfig = async () => {
 // 保存配置
 const handleSave = async () => {
   if (!formRef.value) return
-  
+
   try {
     await formRef.value.validate()
   } catch {
@@ -210,7 +210,7 @@ const handleSave = async () => {
   try {
     const config: ConcurrencyConfig = {
       max_concurrent_tasks: formData.max_concurrent_tasks,
-      task_timeout: formData.task_timeout,
+      http_timeout: formData.http_timeout,
       retry_count: formData.retry_count,
       queue_size: formData.queue_size
     }
@@ -230,7 +230,7 @@ const handleSave = async () => {
 const handleReset = () => {
   if (originalConfig.value) {
     formData.max_concurrent_tasks = originalConfig.value.max_concurrent_tasks
-    formData.task_timeout = originalConfig.value.task_timeout
+    formData.http_timeout = originalConfig.value.http_timeout
     formData.retry_count = originalConfig.value.retry_count
     formData.queue_size = originalConfig.value.queue_size
   }

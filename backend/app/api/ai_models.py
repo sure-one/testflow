@@ -374,9 +374,13 @@ async def test_ai_model(
             "Authorization": f"Bearer {ai_model.api_key}",
             "Content-Type": "application/json"
         }
-        
+
+        # 从配置读取 HTTP 超时时间
+        from app.config import settings
+        http_timeout = getattr(settings, 'ai_http_timeout', 120)
+
         # 发送测试请求
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=http_timeout) as client:
             response = await client.post(
                 f"{ai_model.base_url.rstrip('/')}/chat/completions",
                 json=test_payload,

@@ -78,11 +78,15 @@ class AIService:
         }
         
         print(f"🤖 AI流式调用: model={model}, url={url}")
-        
+
+        # 从配置读取 HTTP 超时时间
+        from app.config import settings
+        http_timeout = getattr(settings, 'ai_http_timeout', 120)
+
         collected_content = []
-        
+
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:  # 增加超时时间
+            async with httpx.AsyncClient(timeout=http_timeout) as client:
                 async with client.stream("POST", url, headers=headers, json=data) as response:
                     if response.status_code != 200:
                         error_text = await response.aread()

@@ -72,8 +72,8 @@ export interface TestDesignMethodResponse extends TestDesignMethodBase {
 export interface ConcurrencyConfig {
   /** 最大并发任务数（范围：1-10） */
   max_concurrent_tasks: number
-  /** 任务超时时间，单位秒（范围：30-600） */
-  task_timeout: number
+  /** HTTP请求超时时间，单位秒（范围：30-600） */
+  http_timeout: number
   /** 失败重试次数（范围：0-5） */
   retry_count: number
   /** 任务队列大小（范围：10-1000） */

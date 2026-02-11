@@ -83,7 +83,7 @@ class TestDesignMethodResponse(TestDesignMethodBase):
 
 class ConcurrencyConfig(BaseModel):
     """并发配置模式
-    
+
     用于控制AI生成任务的并发执行参数
     """
     max_concurrent_tasks: int = Field(
@@ -92,11 +92,13 @@ class ConcurrencyConfig(BaseModel):
         le=10,
         description="最大并发任务数（范围：1-10）"
     )
-    task_timeout: int = Field(
-        default=300,
-        ge=60,
+    # 将 task_timeout 改为 http_timeout，语义更清晰
+    # HTTP 超时控制单次请求的超时时间，超时后会自动重试
+    http_timeout: int = Field(
+        default=120,
+        ge=30,
         le=600,
-        description="任务超时时间，单位秒（范围：60-600）"
+        description="HTTP 单次请求超时时间（秒），范围：30-600"
     )
     retry_count: int = Field(
         default=3,

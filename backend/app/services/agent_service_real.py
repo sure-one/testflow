@@ -30,16 +30,16 @@ class AgentServiceReal:
     - task_timeout: 单次AI调用超时时间
     - max_concurrent_tasks: 最大并发数
     """
-    
+
     # 默认配置
     DEFAULT_RETRY_COUNT = 3
-    DEFAULT_TASK_TIMEOUT = 300  # 秒（与 httpx 和系统设置保持一致）
+    # DEFAULT_TASK_TIMEOUT 已移除，超时现在由 HTTP 层控制
     DEFAULT_RETRY_DELAY = 1  # 重试延迟基数（秒）
-    
+
     @staticmethod
     def _normalize_priority(priority: str) -> str:
         """标准化优先级值
-        
+
         将 P0/P1/P2/HIGH/MEDIUM/LOW 等格式统一转换为 high/medium/low
         """
         if not priority:
@@ -57,27 +57,27 @@ class AgentServiceReal:
             "L": "low"
         }
         return priority_map.get(priority.upper(), "medium")
-    
+
     def __init__(self, db: Optional[Session] = None):
         self.db = db
         # 配置参数（从系统设置加载）
         self._retry_count = self.DEFAULT_RETRY_COUNT
-        self._task_timeout = self.DEFAULT_TASK_TIMEOUT
+        # _task_timeout 已移除，超时现在完全由 HTTP 层控制
         self._retry_delay = self.DEFAULT_RETRY_DELAY
         self._config_loaded = False
-    
+
     def _load_config(self) -> None:
         """从系统设置加载配置"""
         if self._config_loaded:
             return
-        
+
         try:
             if self.db:
                 config = SettingsService.get_concurrency_config(self.db)
                 self._retry_count = config.retry_count
-                self._task_timeout = config.task_timeout
+                # http_timeout 现在控制 HTTP 请求超时
                 self._config_loaded = True
-                print(f"🔧 [AgentService] 已加载配置: retry_count={self._retry_count}, task_timeout={self._task_timeout}s")
+                print(f"🔧 [AgentService] 已加载配置: retry_count={self._retry_count}, http_timeout={config.http_timeout}s")
         except Exception as e:
             print(f"⚠️ [AgentService] 加载配置失败，使用默认值: {e}")
     
@@ -617,11 +617,11 @@ class AgentServiceReal:
         if self.db:
             task_manager.load_config_from_db(self.db)
             self._load_config()  # 同步加载配置
-        
+
         concurrency = task_manager.max_concurrent_tasks
-        
+
         print(f"\n🚀 并发测试点生成: {len(requirement_points)} 个需求点")
-        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次, 超时={self._task_timeout}s")
+        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次")
         
         # 清空这些需求点相关的旧测试点（级联删除测试用例）
         if self.db and requirement_points:
@@ -725,9 +725,9 @@ class AgentServiceReal:
             task_manager.load_config_from_db(self.db)
             self._load_config()  # 同步加载配置
         concurrency = task_manager.max_concurrent_tasks
-        
+
         print(f"\n🚀 批量测试用例设计: {len(test_points)} 个测试点 (批次生成)")
-        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次, 超时={self._task_timeout}s")
+        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次")
         
         # 查询该模块的所有需求文档
         requirement_content = ""
@@ -976,9 +976,9 @@ class AgentServiceReal:
         # 分批
         batches = [original_test_cases[i:i+BATCH_SIZE] for i in range(0, len(original_test_cases), BATCH_SIZE)]
         total_batches = len(batches)
-        
+
         print(f"\n🚀 批量测试用例优化: {len(original_test_cases)} 个用例, 分 {total_batches} 批处理")
-        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次, 超时={self._task_timeout}s")
+        print(f"🔧 配置: 并发={concurrency}, 重试={self._retry_count}次")
         
         try:
             all_results = []
